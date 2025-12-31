@@ -489,30 +489,32 @@ void printMoveType(MoveType type) {
 }
 
 // ==================== CONTRÔLE DES MOTEURS ====================
+// Note: setMotorPwm() = contrôle PWM direct (plus fiable)
+// Sur mBot Ranger: SLOT1=gauche, SLOT2=droite
 
 void moveForward(int speed) {
-  motorLeft.setTarPWM(speed);
-  motorRight.setTarPWM(-speed);
+  motorLeft.setMotorPwm(-speed);   // Gauche: négatif pour avancer
+  motorRight.setMotorPwm(speed);   // Droite: positif pour avancer
 }
 
 void moveBackward(int speed) {
-  motorLeft.setTarPWM(-speed);
-  motorRight.setTarPWM(speed);
+  motorLeft.setMotorPwm(speed);    // Gauche: positif pour reculer
+  motorRight.setMotorPwm(-speed);  // Droite: négatif pour reculer
 }
 
 void spinLeft(int speed) {
-  motorLeft.setTarPWM(-speed);
-  motorRight.setTarPWM(-speed);
+  motorLeft.setMotorPwm(speed);    // Gauche: recule
+  motorRight.setMotorPwm(speed);   // Droite: avance
 }
 
 void spinRight(int speed) {
-  motorLeft.setTarPWM(speed);
-  motorRight.setTarPWM(speed);
+  motorLeft.setMotorPwm(-speed);   // Gauche: avance
+  motorRight.setMotorPwm(-speed);  // Droite: recule
 }
 
 void stopMotors() {
-  motorLeft.setTarPWM(0);
-  motorRight.setTarPWM(0);
+  motorLeft.setMotorPwm(0);
+  motorRight.setMotorPwm(0);
 }
 
 // ==================== CONTRÔLE DES LEDs ====================
