@@ -7,6 +7,7 @@ Collection de programmes Arduino pour le robot Makeblock mBot Ranger.
 | Projet | Description |
 |--------|-------------|
 | [mBot Ranger Dance](examples/mbot-ranger-dance/) | Fait danser le robot avec des mouvements, LEDs et sons |
+| [mBot Ranger Zone Explorer](examples/mbot-ranger-zone-explorer/) | Explore une zone, mémorise le parcours et le rejoue en accéléré |
 
 ## Prérequis
 
