@@ -33,9 +33,9 @@ const int SPEED_MEDIUM = 220;
 const int SPEED_FAST = 255;
 
 // Durées des mouvements en millisecondes
-const int DURATION_SHORT = 200;
-const int DURATION_MEDIUM = 400;
-const int DURATION_LONG = 600;
+const int DURATION_SHORT = 300;
+const int DURATION_MEDIUM = 500;
+const int DURATION_LONG = 800;
 
 // Notes musicales pour le buzzer
 #define NOTE_C4  262
@@ -125,83 +125,114 @@ void loop() {
  * Le robot tourne alternativement à gauche et à droite
  */
 void danceSequence1() {
-  playNote(NOTE_C4, 100);
+  playNote(NOTE_C4, 150);
 
-  for (int i = 0; i < 4; i++) {
+  // Série de rotations alternées
+  for (int i = 0; i < 3; i++) {
     // Tourner à gauche
     setLedColor(255, 0, 0);  // Rouge
-    spinLeft(SPEED_MEDIUM);
+    spinLeft(SPEED_FAST);
     delay(DURATION_MEDIUM);
-    playNote(NOTE_E4, 50);
+    stopMotors();
+    playNote(NOTE_E4, 80);
+    delay(100);
 
     // Tourner à droite
     setLedColor(0, 0, 255);  // Bleu
-    spinRight(SPEED_MEDIUM);
+    spinRight(SPEED_FAST);
     delay(DURATION_MEDIUM);
-    playNote(NOTE_G4, 50);
+    stopMotors();
+    playNote(NOTE_G4, 80);
+    delay(100);
   }
 
+  // Finir avec un tour complet
+  setLedColor(255, 255, 0);  // Jaune
+  spinRight(SPEED_FAST);
+  delay(1200);
   stopMotors();
+  playNote(NOTE_C5, 200);
 }
 
 /**
  * Séquence 2: Le moonwalk
- * Avancer et reculer avec des LEDs clignotantes
+ * Avancer et reculer avec courbes
  */
 void danceSequence2() {
-  playNote(NOTE_A4, 100);
+  playNote(NOTE_A4, 150);
 
-  for (int i = 0; i < 3; i++) {
-    // Avancer
+  // Avancer en zigzag
+  for (int i = 0; i < 2; i++) {
+    // Avancer + courbe gauche
     setLedColor(0, 255, 0);  // Vert
-    moveForward(SPEED_FAST);
+    motorLeft.setMotorPwm(-SPEED_SLOW);
+    motorRight.setMotorPwm(SPEED_FAST);
     delay(DURATION_LONG);
-    playNote(NOTE_C5, 50);
+    playNote(NOTE_D4, 50);
 
-    // Pause avec flash
-    stopMotors();
-    flashLeds(255, 255, 0, 3);  // Jaune
-
-    // Reculer
-    setLedColor(255, 0, 255);  // Magenta
-    moveBackward(SPEED_MEDIUM);
+    // Avancer + courbe droite
+    setLedColor(0, 255, 128);  // Vert clair
+    motorLeft.setMotorPwm(-SPEED_FAST);
+    motorRight.setMotorPwm(SPEED_SLOW);
     delay(DURATION_LONG);
-    playNote(NOTE_G4, 50);
-
-    // Pause
-    stopMotors();
-    delay(DURATION_SHORT);
+    playNote(NOTE_F4, 50);
   }
+
+  stopMotors();
+  flashLeds(255, 255, 0, 2);
+
+  // Reculer droit
+  setLedColor(255, 0, 255);  // Magenta
+  moveBackward(SPEED_FAST);
+  delay(1000);
+  stopMotors();
+  playNote(NOTE_A4, 150);
 }
 
 /**
  * Séquence 3: Le shake
- * Mouvements rapides et saccadés
+ * Mouvements courts et énergiques
  */
 void danceSequence3() {
-  playNote(NOTE_F4, 100);
+  playNote(NOTE_F4, 150);
 
-  for (int i = 0; i < 6; i++) {
-    // Mouvement rapide à gauche
+  // Vibrations rapides
+  for (int i = 0; i < 8; i++) {
     setLedColor(0, 255, 255);  // Cyan
     spinLeft(SPEED_FAST);
-    delay(DURATION_SHORT);
-    playNote(NOTE_B4, 30);
+    delay(150);
 
-    // Mouvement rapide à droite
     setLedColor(255, 165, 0);  // Orange
     spinRight(SPEED_FAST);
-    delay(DURATION_SHORT);
-    playNote(NOTE_D4, 30);
+    delay(150);
+
+    playNote(NOTE_B4 + i * 20, 30);
   }
 
-  // Spin final
-  setLedColor(255, 255, 255);  // Blanc
-  spinRight(SPEED_FAST);
-  delay(800);
-  playNote(NOTE_C5, 200);
-
   stopMotors();
+  delay(200);
+
+  // Avancer-reculer rapide
+  for (int i = 0; i < 3; i++) {
+    setLedColor(255, 0, 0);
+    moveForward(SPEED_FAST);
+    delay(250);
+
+    setLedColor(0, 0, 255);
+    moveBackward(SPEED_FAST);
+    delay(250);
+
+    playNote(NOTE_C5, 50);
+  }
+
+  // Spin final spectaculaire
+  setLedColor(255, 255, 255);  // Blanc
+  spinLeft(SPEED_FAST);
+  delay(1500);
+  stopMotors();
+
+  flashLeds(0, 255, 0, 5);
+  playNote(NOTE_C5, 300);
 }
 
 // ==================== CONTRÔLE DES MOTEURS ====================
