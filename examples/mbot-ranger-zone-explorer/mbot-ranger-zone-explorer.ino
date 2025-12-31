@@ -27,11 +27,12 @@ MeEncoderOnBoard motorRight(SLOT2);
 // Capteur ultrasonique (port 10 par défaut sur Auriga)
 MeUltrasonicSensor ultraSensor(PORT_10);
 
-// LEDs RGB intégrées
+// LEDs RGB intégrées (pin 44 sur Auriga)
 MeRGBLed rgbLed(0, 12);
 
-// Buzzer
+// Buzzer (pin 45 sur Auriga)
 MeBuzzer buzzer;
+#define BUZZER_PIN 45
 
 // ==================== CONFIGURATION DES PARAMÈTRES ====================
 
@@ -91,7 +92,10 @@ void setup() {
   Serial.println("mBot Ranger Zone Explorer");
   Serial.println("=========================");
 
-  // Initialisation des LEDs RGB
+  // Initialisation du buzzer sur pin 45
+  buzzer.setpin(BUZZER_PIN);
+
+  // Initialisation des LEDs RGB sur pin 44
   rgbLed.setpin(44);
   clearLeds();
 
@@ -109,6 +113,9 @@ void setup() {
   motorLeft.setSpeedPid(0.18, 0, 0);
   motorRight.setSpeedPid(0.18, 0, 0);
 
+  // Configuration du Timer pour la mise à jour des moteurs
+  setupMotorTimer();
+
   // Animation de démarrage
   startupAnimation();
 
@@ -118,6 +125,26 @@ void setup() {
 
   // Démarrer l'exploration
   startExploration();
+}
+
+// Timer interrupt pour mise à jour continue des moteurs
+void setupMotorTimer() {
+  // Timer1 pour appeler motorLoop à 200Hz
+  cli();  // Désactiver les interruptions
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1 = 0;
+  OCR1A = 1249;  // 16MHz / (64 * 200Hz) - 1
+  TCCR1B |= (1 << WGM12);  // Mode CTC
+  TCCR1B |= (1 << CS11) | (1 << CS10);  // Prescaler 64
+  TIMSK1 |= (1 << OCIE1A);  // Activer interruption compare
+  sei();  // Réactiver les interruptions
+}
+
+// Interruption Timer1 pour mise à jour des moteurs
+ISR(TIMER1_COMPA_vect) {
+  motorLeft.loop();
+  motorRight.loop();
 }
 
 // ==================== LOOP PRINCIPAL ====================

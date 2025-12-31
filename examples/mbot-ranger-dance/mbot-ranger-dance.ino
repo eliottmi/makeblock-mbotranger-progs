@@ -16,14 +16,16 @@
 #include <MeAuriga.h>
 
 // Configuration des moteurs encodeurs
+// Sur Auriga: Moteur gauche = SLOT1, Moteur droit = SLOT2
 MeEncoderOnBoard motorLeft(SLOT1);
 MeEncoderOnBoard motorRight(SLOT2);
 
-// Configuration des LEDs RGB intégrées (12 LEDs sur la carte Auriga)
+// Configuration des LEDs RGB intégrées (12 LEDs sur la carte Auriga, pin 44)
 MeRGBLed rgbLed(0, 12);
 
-// Configuration du buzzer
+// Configuration du buzzer (pin 45 sur Auriga)
 MeBuzzer buzzer;
+#define BUZZER_PIN 45
 
 // Vitesse de base pour les mouvements (0-255)
 const int SPEED_SLOW = 150;
@@ -48,7 +50,10 @@ const int DURATION_LONG = 600;
 void setup() {
   Serial.begin(115200);
 
-  // Initialisation des LEDs RGB
+  // Initialisation du buzzer sur pin 45
+  buzzer.setpin(BUZZER_PIN);
+
+  // Initialisation des LEDs RGB sur pin 44
   rgbLed.setpin(44);
   rgbLed.setColor(0, 0, 0, 0);
   rgbLed.show();
@@ -57,7 +62,7 @@ void setup() {
   attachInterrupt(motorLeft.getIntNum(), interruptLeft, RISING);
   attachInterrupt(motorRight.getIntNum(), interruptRight, RISING);
 
-  // Configuration des moteurs
+  // Configuration des moteurs encodeurs pour mBot Ranger
   motorLeft.setPulse(9);
   motorRight.setPulse(9);
   motorLeft.setRatio(39.267);
@@ -67,10 +72,33 @@ void setup() {
   motorLeft.setSpeedPid(0.18, 0, 0);
   motorRight.setSpeedPid(0.18, 0, 0);
 
+  // Configuration du Timer pour la mise à jour des moteurs (important!)
+  setupMotorTimer();
+
   // Animation de démarrage
   startupAnimation();
 
   delay(1000);
+}
+
+// Timer interrupt pour mise à jour continue des moteurs
+void setupMotorTimer() {
+  // Timer1 pour appeler motorLoop à 100Hz
+  cli();  // Désactiver les interruptions
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1 = 0;
+  OCR1A = 1249;  // 16MHz / (64 * 100Hz) - 1 = 2499, ajusté pour 200Hz
+  TCCR1B |= (1 << WGM12);  // Mode CTC
+  TCCR1B |= (1 << CS11) | (1 << CS10);  // Prescaler 64
+  TIMSK1 |= (1 << OCIE1A);  // Activer interruption compare
+  sei();  // Réactiver les interruptions
+}
+
+// Interruption Timer1 pour mise à jour des moteurs
+ISR(TIMER1_COMPA_vect) {
+  motorLeft.loop();
+  motorRight.loop();
 }
 
 void loop() {
@@ -181,36 +209,27 @@ void danceSequence3() {
 void moveForward(int speed) {
   motorLeft.setTarPWM(speed);
   motorRight.setTarPWM(-speed);
-  updateMotors();
 }
 
 void moveBackward(int speed) {
   motorLeft.setTarPWM(-speed);
   motorRight.setTarPWM(speed);
-  updateMotors();
 }
 
 void spinLeft(int speed) {
   motorLeft.setTarPWM(-speed);
   motorRight.setTarPWM(-speed);
-  updateMotors();
 }
 
 void spinRight(int speed) {
   motorLeft.setTarPWM(speed);
   motorRight.setTarPWM(speed);
-  updateMotors();
 }
 
 void stopMotors() {
   motorLeft.setTarPWM(0);
   motorRight.setTarPWM(0);
-  updateMotors();
-}
-
-void updateMotors() {
-  motorLeft.loop();
-  motorRight.loop();
+  // Les moteurs sont mis à jour automatiquement par le Timer
 }
 
 // ==================== CONTRÔLE DES LEDs ====================
