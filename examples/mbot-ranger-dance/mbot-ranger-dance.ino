@@ -26,9 +26,9 @@ MeRGBLed rgbLed(0, 12);
 MeBuzzer buzzer;
 
 // Vitesse de base pour les mouvements (0-255)
-const int SPEED_SLOW = 100;
-const int SPEED_MEDIUM = 150;
-const int SPEED_FAST = 200;
+const int SPEED_SLOW = 150;
+const int SPEED_MEDIUM = 220;
+const int SPEED_FAST = 255;
 
 // Durées des mouvements en millisecondes
 const int DURATION_SHORT = 200;
