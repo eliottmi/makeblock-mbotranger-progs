@@ -28,9 +28,10 @@ MeBuzzer buzzer;
 #define BUZZER_PIN 45
 
 // Vitesse de base pour les mouvements (0-255)
-const int SPEED_SLOW = 150;
-const int SPEED_MEDIUM = 220;
-const int SPEED_FAST = 255;
+// Vitesses réduites pour éviter les resets sur batterie
+const int SPEED_SLOW = 100;
+const int SPEED_MEDIUM = 150;
+const int SPEED_FAST = 180;
 
 // Durées des mouvements en millisecondes
 const int DURATION_SHORT = 300;
@@ -61,7 +62,11 @@ void setup() {
   // Animation de démarrage
   startupAnimation();
 
-  delay(1000);
+  // Délai pour stabiliser l'alimentation
+  delay(2000);
+
+  // Test moteurs progressif pour éviter l'appel de courant brutal
+  warmupMotors();
 }
 
 void loop() {
@@ -226,6 +231,34 @@ void spinRight(int speed) {
 void stopMotors() {
   motorLeft.setMotorPwm(0);
   motorRight.setMotorPwm(0);
+}
+
+// Démarrage progressif des moteurs pour éviter l'appel de courant brutal
+void warmupMotors() {
+  setLedColor(255, 100, 0);  // Orange
+
+  // Montée progressive de la vitesse
+  for (int speed = 20; speed <= SPEED_MEDIUM; speed += 20) {
+    motorLeft.setMotorPwm(-speed);
+    motorRight.setMotorPwm(speed);
+    delay(100);
+  }
+
+  delay(200);
+  stopMotors();
+  delay(200);
+
+  // Petit test de rotation
+  for (int speed = 20; speed <= SPEED_SLOW; speed += 20) {
+    spinLeft(speed);
+    delay(50);
+  }
+
+  delay(300);
+  stopMotors();
+
+  setLedColor(0, 255, 0);  // Vert = prêt
+  delay(500);
 }
 
 // ==================== CONTRÔLE DES LEDs ====================
