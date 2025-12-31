@@ -58,47 +58,10 @@ void setup() {
   rgbLed.setColor(0, 0, 0, 0);
   rgbLed.show();
 
-  // Initialisation des interruptions pour les encodeurs
-  attachInterrupt(motorLeft.getIntNum(), interruptLeft, RISING);
-  attachInterrupt(motorRight.getIntNum(), interruptRight, RISING);
-
-  // Configuration des moteurs encodeurs pour mBot Ranger
-  motorLeft.setPulse(9);
-  motorRight.setPulse(9);
-  motorLeft.setRatio(39.267);
-  motorRight.setRatio(39.267);
-  motorLeft.setPosPid(1.8, 0, 1.2);
-  motorRight.setPosPid(1.8, 0, 1.2);
-  motorLeft.setSpeedPid(0.18, 0, 0);
-  motorRight.setSpeedPid(0.18, 0, 0);
-
-  // Configuration du Timer pour la mise à jour des moteurs (important!)
-  setupMotorTimer();
-
   // Animation de démarrage
   startupAnimation();
 
   delay(1000);
-}
-
-// Timer interrupt pour mise à jour continue des moteurs
-void setupMotorTimer() {
-  // Timer1 pour appeler motorLoop à 100Hz
-  cli();  // Désactiver les interruptions
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCNT1 = 0;
-  OCR1A = 1249;  // 16MHz / (64 * 100Hz) - 1 = 2499, ajusté pour 200Hz
-  TCCR1B |= (1 << WGM12);  // Mode CTC
-  TCCR1B |= (1 << CS11) | (1 << CS10);  // Prescaler 64
-  TIMSK1 |= (1 << OCIE1A);  // Activer interruption compare
-  sei();  // Réactiver les interruptions
-}
-
-// Interruption Timer1 pour mise à jour des moteurs
-ISR(TIMER1_COMPA_vect) {
-  motorLeft.loop();
-  motorRight.loop();
 }
 
 void loop() {
@@ -359,20 +322,3 @@ void playMelody() {
   }
 }
 
-// ==================== INTERRUPTIONS ENCODEURS ====================
-
-void interruptLeft() {
-  if (digitalRead(motorLeft.getPortB()) == 0) {
-    motorLeft.pulsePosMinus();
-  } else {
-    motorLeft.pulsePosPlus();
-  }
-}
-
-void interruptRight() {
-  if (digitalRead(motorRight.getPortB()) == 0) {
-    motorRight.pulsePosMinus();
-  } else {
-    motorRight.pulsePosPlus();
-  }
-}
