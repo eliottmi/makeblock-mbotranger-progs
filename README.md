@@ -10,6 +10,7 @@ Collection de programmes Arduino pour le robot Makeblock mBot Ranger.
 | [mBot Ranger Zone Explorer](examples/mbot-ranger-zone-explorer/) | Explore une zone, mémorise le parcours et le rejoue en accéléré |
 | [mBot Ranger Mapper](examples/mbot-ranger-mapper/) | Cartographie l'environnement et affiche une carte 2D |
 | [mBot Ranger Guardian](examples/mbot-ranger-guardian/) | Robot de surveillance avec patrouille et détection d'intrusion |
+| [mBot Ranger Pi Notifier](examples/mbot-ranger-pi-notifier/) | Interface Raspberry Pi pour notifications email |
 
 ## Prérequis
 

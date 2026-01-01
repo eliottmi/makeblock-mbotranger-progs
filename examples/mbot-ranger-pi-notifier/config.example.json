@@ -1,0 +1,19 @@
+{
+  "serial_port": "/dev/ttyUSB0",
+  "baud_rate": 115200,
+  "email": {
+    "enabled": true,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "votre_email@gmail.com",
+    "sender_password": "votre_mot_de_passe_application",
+    "recipient_email": "destinataire@email.com"
+  },
+  "alerts": {
+    "obstacle": true,
+    "motion": true,
+    "button": true,
+    "light": false
+  },
+  "cooldown_seconds": 60
+}

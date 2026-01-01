@@ -1,0 +1,284 @@
+# mBot Ranger Pi Notifier
+
+Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications par email lors de détections d'événements.
+
+## Architecture
+
+```
+┌─────────────────┐     USB/Série     ┌─────────────────┐     Internet     ┌─────────────┐
+│   mBot Ranger   │ ◄───────────────► │  Raspberry Pi   │ ───────────────► │    Email    │
+│   (Arduino)     │    JSON 115200    │   (Python)      │      SMTP        │   Server    │
+└─────────────────┘                   └─────────────────┘                  └─────────────┘
+       │                                      │
+       ▼                                      ▼
+  Capteur ultrason                    Script pi_notifier.py
+  LEDs, Buzzer                        Envoi d'emails
+  Moteurs                             Contrôle à distance
+```
+
+## Fonctionnalités
+
+### Détections (Arduino → Pi)
+- **Obstacle** : Objet détecté à moins de 30 cm
+- **Mouvement** : Changement de distance > 15 cm
+- **Bouton** : Appui sur le bouton intégré
+- **Lumière** : Changement de niveau lumineux (optionnel)
+
+### Contrôle (Pi → Arduino)
+- Démarrer/arrêter le monitoring
+- Contrôler les LEDs
+- Déplacer le robot
+- Jouer des sons
+
+## Matériel requis
+
+### mBot Ranger
+- Carte Me Auriga
+- Capteur ultrasonique (port 10)
+- Câble USB
+
+### Raspberry Pi
+- Raspberry Pi (tout modèle avec USB)
+- Connexion Internet (WiFi ou Ethernet)
+- Python 3.x
+
+## Installation
+
+### 1. Côté mBot Ranger
+
+1. Ouvrir `mbot-ranger-pi-notifier.ino` dans Arduino IDE
+2. Sélectionner **Tools > Board > Arduino Mega 2560**
+3. Téléverser le programme
+
+### 2. Côté Raspberry Pi
+
+```bash
+# Installer les dépendances
+pip3 install pyserial
+
+# Cloner le projet (ou copier les fichiers)
+cd /home/pi
+git clone <repo_url>
+cd mbot-ranger-pi-notifier
+
+# Créer la configuration
+cp config.example.json config.json
+nano config.json  # Éditer avec vos paramètres
+```
+
+### 3. Configuration email (Gmail)
+
+Pour Gmail, vous devez créer un **mot de passe d'application**:
+
+1. Activer la validation en 2 étapes sur votre compte Google
+2. Aller dans: Compte Google > Sécurité > Mots de passe des applications
+3. Créer un nouveau mot de passe pour "Mail" sur "Autre"
+4. Utiliser ce mot de passe dans `config.json`
+
+## Utilisation
+
+### Connexion du robot
+
+1. Connecter le mBot Ranger au Raspberry Pi via USB
+2. Trouver le port série:
+   ```bash
+   ls /dev/ttyUSB*
+   # ou
+   ls /dev/ttyACM*
+   ```
+
+### Démarrer le monitoring
+
+```bash
+# Avec le port par défaut (/dev/ttyUSB0)
+python3 pi_notifier.py
+
+# Avec un port spécifique
+python3 pi_notifier.py --port /dev/ttyACM0
+
+# Avec un fichier de configuration
+python3 pi_notifier.py --config config.json
+
+# Mode debug
+python3 pi_notifier.py --debug
+```
+
+### Mode interactif
+
+```bash
+python3 pi_notifier.py --interactive
+
+mBot> start      # Démarrer le monitoring
+mBot> status     # Obtenir le statut
+mBot> led_red    # LED rouge
+mBot> forward    # Avancer
+mBot> quit       # Quitter
+```
+
+## Configuration
+
+### config.json
+
+```json
+{
+  "serial_port": "/dev/ttyUSB0",
+  "baud_rate": 115200,
+  "email": {
+    "enabled": true,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "votre_email@gmail.com",
+    "sender_password": "mot_de_passe_app",
+    "recipient_email": "destinataire@email.com"
+  },
+  "alerts": {
+    "obstacle": true,
+    "motion": true,
+    "button": true,
+    "light": false
+  },
+  "cooldown_seconds": 60
+}
+```
+
+### Paramètres
+
+| Paramètre | Description |
+|-----------|-------------|
+| `serial_port` | Port série du robot |
+| `email.enabled` | Activer l'envoi d'emails |
+| `alerts.*` | Types d'alertes à notifier |
+| `cooldown_seconds` | Délai entre deux alertes identiques |
+
+## Protocole de communication
+
+### Messages JSON (Arduino → Pi)
+
+**Alerte:**
+```json
+{
+  "type": "alert",
+  "alert": "obstacle",
+  "message": "Obstacle detected nearby",
+  "value": 25.5,
+  "timestamp": 12345
+}
+```
+
+**Status:**
+```json
+{
+  "type": "status",
+  "distance": 150.0,
+  "baseline": 200.0,
+  "light": 512,
+  "monitoring": true,
+  "uptime": 3600
+}
+```
+
+**Heartbeat:**
+```json
+{
+  "type": "heartbeat",
+  "uptime": 3600
+}
+```
+
+### Commandes (Pi → Arduino)
+
+| Commande | Description |
+|----------|-------------|
+| `start` / `monitor` | Démarrer le monitoring |
+| `stop` | Arrêter le monitoring |
+| `status` | Demander le statut |
+| `calibrate` | Recalibrer les capteurs |
+| `ping` | Test de connexion |
+| `led_red/green/blue/off` | Contrôler les LEDs |
+| `beep` | Jouer un bip |
+| `alarm` | Jouer l'alarme |
+| `forward/backward/left/right` | Déplacer le robot |
+| `obstacle_on/off` | Activer/désactiver alertes obstacle |
+| `motion_on/off` | Activer/désactiver alertes mouvement |
+
+## Service systemd (optionnel)
+
+Pour démarrer automatiquement au boot:
+
+```bash
+sudo nano /etc/systemd/system/mbot-notifier.service
+```
+
+```ini
+[Unit]
+Description=mBot Ranger Pi Notifier
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/mbot-ranger-pi-notifier
+ExecStart=/usr/bin/python3 pi_notifier.py --config config.json
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable mbot-notifier
+sudo systemctl start mbot-notifier
+sudo systemctl status mbot-notifier
+```
+
+## Dépannage
+
+### Le port série n'est pas trouvé
+```bash
+# Lister les ports
+ls -la /dev/ttyUSB* /dev/ttyACM*
+
+# Ajouter l'utilisateur au groupe dialout
+sudo usermod -a -G dialout $USER
+# Puis se reconnecter
+```
+
+### Permission denied sur le port
+```bash
+sudo chmod 666 /dev/ttyUSB0
+# ou
+sudo usermod -a -G dialout pi
+```
+
+### Les emails ne sont pas envoyés
+- Vérifier la connexion Internet
+- Vérifier les paramètres SMTP
+- Pour Gmail: utiliser un mot de passe d'application
+- Vérifier les logs: `python3 pi_notifier.py --debug`
+
+### Le robot ne répond pas
+- Vérifier la connexion USB
+- Vérifier que le bon port est utilisé
+- Redémarrer le robot
+
+## Exemples d'utilisation
+
+### Surveillance d'une pièce
+1. Placer le robot dans la pièce
+2. Démarrer le script sur le Pi
+3. Recevoir un email si quelqu'un entre
+
+### Alarme connectée
+1. Combiner avec le projet Guardian
+2. Modifier le script pour envoyer des SMS (Twilio)
+3. Ajouter une caméra Pi pour capturer des images
+
+### Domotique
+1. Intégrer avec Home Assistant
+2. Déclencher des actions sur détection
+3. Contrôler le robot via l'interface domotique
+
+## Licence
+
+MIT License
