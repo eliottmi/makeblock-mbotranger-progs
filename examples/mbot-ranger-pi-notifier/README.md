@@ -7,7 +7,7 @@ Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications
 <table>
 <tr>
 <td width="50%">
-<img src="images/web-interface.png" alt="Interface Web" width="100%">
+<img src="images/web-interface.jpg" alt="Interface Web" width="100%">
 <p align="center"><em>Interface web avec streaming caméra</em></p>
 </td>
 <td width="50%">
