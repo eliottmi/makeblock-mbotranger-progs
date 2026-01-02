@@ -64,7 +64,7 @@ const uint8_t CELL_OBSTACLE = 2;
 const uint8_t CELL_ROBOT = 3;
 
 // La carte
-uint8_t map[MAP_HEIGHT][MAP_WIDTH];
+uint8_t gridMap[MAP_HEIGHT][MAP_WIDTH];
 
 // ==================== ODOMÉTRIE ====================
 
@@ -438,7 +438,7 @@ void updateOdometry() {
 void initMap() {
   for (int y = 0; y < MAP_HEIGHT; y++) {
     for (int x = 0; x < MAP_WIDTH; x++) {
-      map[y][x] = CELL_UNKNOWN;
+      gridMap[y][x] = CELL_UNKNOWN;
     }
   }
 }
@@ -448,7 +448,7 @@ void markRobotPosition() {
   int cellY = (int)(robotY / CELL_SIZE);
 
   if (cellX >= 0 && cellX < MAP_WIDTH && cellY >= 0 && cellY < MAP_HEIGHT) {
-    map[cellY][cellX] = CELL_FREE;
+    gridMap[cellY][cellX] = CELL_FREE;
   }
 }
 
@@ -457,7 +457,7 @@ void markObstacle(float x, float y) {
   int cellY = (int)(y / CELL_SIZE);
 
   if (cellX >= 0 && cellX < MAP_WIDTH && cellY >= 0 && cellY < MAP_HEIGHT) {
-    map[cellY][cellX] = CELL_OBSTACLE;
+    gridMap[cellY][cellX] = CELL_OBSTACLE;
   }
 }
 
@@ -476,8 +476,8 @@ void markFreePath(float x1, float y1, float x2, float y2) {
 
   while (true) {
     if (cellX1 >= 0 && cellX1 < MAP_WIDTH && cellY1 >= 0 && cellY1 < MAP_HEIGHT) {
-      if (map[cellY1][cellX1] == CELL_UNKNOWN) {
-        map[cellY1][cellX1] = CELL_FREE;
+      if (gridMap[cellY1][cellX1] == CELL_UNKNOWN) {
+        gridMap[cellY1][cellX1] = CELL_FREE;
       }
     }
 
@@ -525,7 +525,7 @@ void printMap() {
           Serial.print("<");  // Gauche
         }
       } else {
-        switch (map[y][x]) {
+        switch (gridMap[y][x]) {
           case CELL_UNKNOWN:
             Serial.print(".");
             break;
