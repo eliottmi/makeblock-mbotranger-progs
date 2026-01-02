@@ -2,6 +2,21 @@
 
 Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications par email et contrôler le robot via une interface web.
 
+## Aperçu
+
+<table>
+<tr>
+<td width="50%">
+<img src="images/web-interface.png" alt="Interface Web" width="100%">
+<p align="center"><em>Interface web avec streaming caméra</em></p>
+</td>
+<td width="50%">
+<img src="images/robot-setup.jpg" alt="Robot Setup" width="100%">
+<p align="center"><em>mBot Ranger avec Raspberry Pi monté</em></p>
+</td>
+</tr>
+</table>
+
 ## Architecture
 
 ```
