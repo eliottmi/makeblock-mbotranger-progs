@@ -1,11 +1,21 @@
 /**
- * mBot Ranger Mapper (Cartographe) v2
+ * mBot Ranger Mapper (Cartographe) v3
  *
  * Ce programme fait cartographier une zone au robot:
- * - Utilise le GYROSCOPE pour mesurer précisément l'orientation
- * - Effectue un SCAN 360° complet à chaque position
+ * - Utilise le GYROSCOPE pour contrôler précisément les rotations
+ * - Effectue un SCAN 360° complet avec contrôle gyroscopique
  * - Détecte les COLLISIONS via l'accéléromètre
  * - Construit une carte 2D de l'environnement
+ * - Préchauffage des moteurs pour éviter reset batterie
+ *
+ * Commandes:
+ *   s - Démarrer la cartographie
+ *   t - Test scan 360°
+ *   g - Debug gyroscope en live
+ *   c - Calibrer gyroscope
+ *   p - Afficher carte
+ *   r - Réinitialiser
+ *   q - Arrêter
  *
  * Matériel: Makeblock mBot Ranger (carte Me Auriga)
  *           Capteur ultrasonique sur port 10
@@ -47,10 +57,10 @@ const float PULSES_PER_REV = 9.0;
 const float GEAR_RATIO = 39.267;
 const float CM_PER_PULSE = (PI * WHEEL_DIAMETER) / (PULSES_PER_REV * GEAR_RATIO);
 
-// Vitesses
-const int SPEED_MOVE = 100;
-const int SPEED_TURN = 80;
-const int SPEED_SCAN = 60;  // Vitesse lente pour le scan
+// Vitesses (augmentées pour assurer le mouvement)
+const int SPEED_MOVE = 180;
+const int SPEED_TURN = 150;
+const int SPEED_SCAN = 120;  // Vitesse pour le scan rotatif
 
 // ==================== PARAMÈTRES DE LA CARTE ====================
 
@@ -146,10 +156,11 @@ void setup() {
 
   Serial.println("\nCommandes:");
   Serial.println("  's' - Démarrer la cartographie");
+  Serial.println("  't' - Test scan 360° (gyroscope)");
+  Serial.println("  'g' - Debug gyroscope en live");
+  Serial.println("  'c' - Calibrer gyroscope");
   Serial.println("  'p' - Afficher la carte");
   Serial.println("  'r' - Réinitialiser");
-  Serial.println("  'c' - Calibrer gyroscope");
-  Serial.println("  't' - Test scan 360°");
   Serial.println("  'q' - Arrêter");
 }
 
@@ -328,10 +339,18 @@ void startMapping() {
   Serial.println("\n*** DÉMARRAGE CARTOGRAPHIE ***");
   setLedColor(0, 0, 255);
 
-  // Calibrer d'abord
+  // Préchauffer les moteurs (évite reset batterie)
+  warmupMotors();
+
+  // Calibrer le gyroscope
+  gyro.update();
+  delay(100);
   gyroAngleOffset = gyro.getAngleZ();
   robotAngle = 0;
   explorationStep = 0;
+
+  Serial.print("Offset gyroscope: ");
+  Serial.println(gyroAngleOffset);
 
   // Marquer la position initiale
   markPosition(robotX, robotY, CELL_FREE);
@@ -352,14 +371,18 @@ void stopMapping() {
 
 // ==================== SCAN 360° ====================
 
-// Temps pour tourner de SCAN_STEP degrés (à calibrer)
-const int TIME_PER_SCAN_STEP = 150;  // ms pour 15 degrés
+// Variables pour le scan gyroscopique
+float scanStartAngle = 0;      // Angle initial du scan
+float scanTargetAngle = 0;     // Angle cible actuel
+bool scanRotating = false;     // En train de tourner?
+unsigned long scanTimeout = 0; // Timeout de sécurité
 
 void startScan360() {
-  Serial.println("\nScan 360° en cours...");
+  Serial.println("\nScan 360° en cours (contrôle gyroscope)...");
   setLedColor(0, 100, 255);
 
   currentScanIndex = 0;
+  scanRotating = false;
 
   // Réinitialiser les mesures
   for (int i = 0; i < NUM_SCAN_POINTS; i++) {
@@ -367,55 +390,146 @@ void startScan360() {
     scanAngles[i] = 0;
   }
 
+  // Calibrer l'angle de départ
+  gyro.update();
+  scanStartAngle = gyro.getAngleZ();
+  scanTargetAngle = scanStartAngle;
+
+  Serial.print("Angle de départ: ");
+  Serial.println(scanStartAngle);
+
   // Première mesure à la position actuelle
   stopMotors();
-  delay(200);
+  delay(300);
 
   currentState = STATE_SCANNING_360;
 }
 
 void scanning360Loop() {
-  // Mesurer la distance à la position actuelle
-  float distance = measureDistance();
+  gyro.update();
+  float currentGyroAngle = gyro.getAngleZ();
 
-  scanDistances[currentScanIndex] = distance;
-  scanAngles[currentScanIndex] = radians(currentScanIndex * SCAN_STEP);
+  if (scanRotating) {
+    // En rotation vers l'angle cible
+    float angleDiff = scanTargetAngle - currentGyroAngle;
 
-  // Afficher
-  Serial.print("  ");
-  Serial.print(currentScanIndex * SCAN_STEP);
-  Serial.print("°: ");
-  if (distance > 0) {
-    Serial.print(distance);
-    Serial.println(" cm");
+    // Normaliser la différence d'angle
+    while (angleDiff > 180) angleDiff -= 360;
+    while (angleDiff < -180) angleDiff += 360;
+
+    // Vérifier timeout de sécurité (3 secondes max par rotation)
+    if (millis() > scanTimeout) {
+      Serial.println("  (timeout rotation)");
+      stopMotors();
+      delay(200);
+      scanRotating = false;
+      return;
+    }
+
+    if (abs(angleDiff) > 3.0) {  // Tolérance de 3 degrés
+      // Continuer à tourner
+      spinLeft(SPEED_SCAN);
+
+      // Feedback LED pendant rotation
+      int progress = (currentScanIndex * 12) / NUM_SCAN_POINTS;
+      for (int i = 1; i <= 12; i++) {
+        if (i <= progress) {
+          rgbLed.setColor(i, 0, 255, 0);
+        } else {
+          rgbLed.setColor(i, 0, 50, 100);
+        }
+      }
+      rgbLed.show();
+    } else {
+      // Angle atteint
+      stopMotors();
+      delay(250);  // Stabiliser avant mesure
+      scanRotating = false;
+    }
   } else {
-    Serial.println("--");
+    // Prendre une mesure
+    float distance = measureDistance();
+
+    scanDistances[currentScanIndex] = distance;
+    scanAngles[currentScanIndex] = radians(currentScanIndex * SCAN_STEP);
+
+    // Afficher
+    Serial.print("  ");
+    Serial.print(currentScanIndex * SCAN_STEP);
+    Serial.print("° (gyro:");
+    Serial.print(currentGyroAngle, 1);
+    Serial.print("°): ");
+    if (distance > 0) {
+      Serial.print(distance);
+      Serial.println(" cm");
+    } else {
+      Serial.println("--");
+    }
+
+    // LED selon distance
+    if (distance > 0 && distance < 30) {
+      setLedColor(255, 0, 0);  // Rouge = proche
+    } else if (distance > 0 && distance < 80) {
+      setLedColor(255, 165, 0);  // Orange = moyen
+    } else {
+      setLedColor(0, 100, 255);  // Bleu = loin
+    }
+
+    currentScanIndex++;
+
+    if (currentScanIndex >= NUM_SCAN_POINTS) {
+      // Scan complet - revenir à l'angle de départ
+      Serial.println("Scan 360° terminé!");
+      stopMotors();
+
+      // Tourner pour revenir à l'orientation initiale
+      Serial.print("Retour à l'angle initial: ");
+      Serial.println(scanStartAngle);
+      rotateToAngle(scanStartAngle);
+
+      buzzer.tone(800, 100);
+      currentState = STATE_PROCESSING_SCAN;
+    } else {
+      // Préparer la rotation vers le prochain angle
+      scanTargetAngle = scanStartAngle + (currentScanIndex * SCAN_STEP);
+      // Normaliser
+      while (scanTargetAngle > 180) scanTargetAngle -= 360;
+      while (scanTargetAngle < -180) scanTargetAngle += 360;
+
+      scanRotating = true;
+      scanTimeout = millis() + 3000;  // 3 secondes max
+    }
+  }
+}
+
+// Rotation vers un angle absolu du gyroscope
+void rotateToAngle(float targetAngle) {
+  unsigned long timeout = millis() + 5000;  // 5 secondes max
+
+  while (millis() < timeout) {
+    gyro.update();
+    float currentAngle = gyro.getAngleZ();
+    float diff = targetAngle - currentAngle;
+
+    while (diff > 180) diff -= 360;
+    while (diff < -180) diff += 360;
+
+    if (abs(diff) < 3.0) {
+      stopMotors();
+      return;
+    }
+
+    if (diff > 0) {
+      spinLeft(SPEED_SCAN);
+    } else {
+      spinRight(SPEED_SCAN);
+    }
+
+    delay(20);
   }
 
-  // LED selon distance
-  if (distance > 0 && distance < 30) {
-    setLedColor(255, 0, 0);  // Rouge = proche
-  } else if (distance > 0 && distance < 80) {
-    setLedColor(255, 165, 0);  // Orange = moyen
-  } else {
-    setLedColor(0, 100, 255);  // Bleu = loin ou pas de détection
-  }
-
-  currentScanIndex++;
-
-  if (currentScanIndex >= NUM_SCAN_POINTS) {
-    // Scan complet
-    stopMotors();
-    Serial.println("Scan 360° terminé!");
-    buzzer.tone(800, 100);
-    currentState = STATE_PROCESSING_SCAN;
-  } else {
-    // Tourner vers la prochaine position (timing fixe)
-    spinLeft(SPEED_SCAN);
-    delay(TIME_PER_SCAN_STEP);
-    stopMotors();
-    delay(150);  // Stabiliser avant mesure
-  }
+  stopMotors();
+  Serial.println("  (timeout retour angle)");
 }
 
 float measureDistance() {
@@ -439,31 +553,49 @@ float measureDistance() {
 }
 
 void testScan360() {
-  Serial.println("\n=== TEST SCAN 360° ===");
-  Serial.println("Rotation par timing (sans gyroscope)");
+  Serial.println("\n=== TEST SCAN 360° (GYROSCOPE) ===");
   setLedColor(255, 0, 255);
 
-  // Temps pour tourner de 30 degrés (à ajuster selon le robot)
-  const int TIME_PER_30_DEG = 300;  // ms
+  // Préchauffer les moteurs
+  warmupMotors();
+
+  // Calibrer le gyroscope
+  gyro.update();
+  float startAngle = gyro.getAngleZ();
+  Serial.print("Angle de départ: ");
+  Serial.println(startAngle);
 
   // Mesure initiale à 0°
   stopMotors();
   delay(300);
   float distance = measureDistance();
-  Serial.print("0°: ");
+  Serial.print("0° (gyro: ");
+  Serial.print(startAngle, 1);
+  Serial.print("°): ");
   Serial.print(distance);
   Serial.println(" cm");
 
-  // Tourner et mesurer tous les 30°
+  // Tourner et mesurer tous les 30° en utilisant le gyroscope
   for (int angle = 30; angle < 360; angle += 30) {
-    // Tourner de 30 degrés
+    float targetAngle = startAngle + angle;
+    // Normaliser
+    while (targetAngle > 180) targetAngle -= 360;
+    while (targetAngle < -180) targetAngle += 360;
+
+    Serial.print("Rotation vers ");
+    Serial.print(angle);
+    Serial.print("° (cible gyro: ");
+    Serial.print(targetAngle, 1);
+    Serial.println("°)...");
+
+    // Tourner vers l'angle cible avec le gyroscope
     setLedColor(0, 0, 255);
-    spinLeft(SPEED_SCAN);
-    delay(TIME_PER_30_DEG);
-    stopMotors();
+    rotateToAngle(targetAngle);
     delay(300);  // Stabiliser
 
     // Mesurer
+    gyro.update();
+    float currentAngle = gyro.getAngleZ();
     distance = measureDistance();
 
     // LED selon distance
@@ -476,7 +608,9 @@ void testScan360() {
     }
 
     Serial.print(angle);
-    Serial.print("°: ");
+    Serial.print("° (gyro: ");
+    Serial.print(currentAngle, 1);
+    Serial.print("°): ");
     if (distance > 0) {
       Serial.print(distance);
       Serial.println(" cm");
@@ -484,6 +618,10 @@ void testScan360() {
       Serial.println("-- (pas de détection)");
     }
   }
+
+  // Retour à l'angle initial
+  Serial.println("Retour à l'orientation initiale...");
+  rotateToAngle(startAngle);
 
   stopMotors();
   setLedColor(0, 255, 0);
@@ -565,17 +703,30 @@ void moveLoop() {
   static unsigned long moveStartTime = 0;
   static bool moving = false;
   static bool turning = true;
+  static float moveTargetGyroAngle = 0;
 
   gyro.update();
-  float currentAngle = radians(gyro.getAngleZ() - gyroAngleOffset);
+  float currentGyroAngle = gyro.getAngleZ();
 
   if (turning) {
-    // D'abord tourner vers la direction cible
-    float angleDiff = targetAngle - currentAngle;
-    while (angleDiff > PI) angleDiff -= 2 * PI;
-    while (angleDiff < -PI) angleDiff += 2 * PI;
+    // Calculer l'angle cible en degrés du gyroscope
+    // targetAngle est relatif au robot (en radians), convertir en absolu gyro
+    if (moveStartTime == 0) {
+      moveTargetGyroAngle = currentGyroAngle + degrees(targetAngle);
+      // Normaliser
+      while (moveTargetGyroAngle > 180) moveTargetGyroAngle -= 360;
+      while (moveTargetGyroAngle < -180) moveTargetGyroAngle += 360;
+      moveStartTime = 1;  // Flag initialisé
 
-    if (abs(angleDiff) > 0.1) {
+      Serial.print("Rotation vers angle gyro: ");
+      Serial.println(moveTargetGyroAngle);
+    }
+
+    float angleDiff = moveTargetGyroAngle - currentGyroAngle;
+    while (angleDiff > 180) angleDiff -= 360;
+    while (angleDiff < -180) angleDiff += 360;
+
+    if (abs(angleDiff) > 5.0) {  // Tolérance 5 degrés
       if (angleDiff > 0) {
         spinLeft(SPEED_TURN);
       } else {
@@ -587,6 +738,7 @@ void moveLoop() {
       turning = false;
       moving = true;
       moveStartTime = millis();
+      Serial.println("Angle atteint, avance...");
     }
   } else if (moving) {
     // Vérifier les obstacles pendant le mouvement
@@ -597,6 +749,7 @@ void moveLoop() {
       stopMotors();
       moving = false;
       turning = true;
+      moveStartTime = 0;
       markRobotPosition();
 
       Serial.println("Obstacle détecté pendant le mouvement!");
@@ -608,11 +761,12 @@ void moveLoop() {
     // Avancer
     moveForward(SPEED_MOVE);
 
-    // Avancer pendant un temps limité
-    if (millis() - moveStartTime > 1500) {
+    // Avancer pendant un temps limité (2 secondes)
+    if (millis() - moveStartTime > 2000) {
       stopMotors();
       moving = false;
       turning = true;
+      moveStartTime = 0;
       markRobotPosition();
 
       delay(300);
@@ -852,6 +1006,19 @@ void printMap() {
 }
 
 // ==================== CONTRÔLE DES MOTEURS ====================
+
+// Préchauffage progressif des moteurs (évite reset sur batterie)
+void warmupMotors() {
+  Serial.println("Préchauffage des moteurs...");
+  for (int speed = 40; speed <= SPEED_SCAN; speed += 20) {
+    motorLeft.setMotorPwm(-speed);
+    motorRight.setMotorPwm(speed);
+    delay(80);
+  }
+  stopMotors();
+  delay(200);
+  Serial.println("Moteurs prêts.");
+}
 
 void moveForward(int speed) {
   motorLeft.setMotorPwm(-speed);
