@@ -7,7 +7,7 @@ depuis n'importe quel navigateur sur le réseau local.
 Inclut le streaming vidéo de la caméra Pi.
 
 Prérequis:
-    pip3 install flask flask-socketio pyserial
+    pip3 install flask flask-socketio pyserial simple-websocket
 
     Pour la caméra (optionnel):
     pip3 install picamera2  # Pour Pi Camera (recommandé)
@@ -15,7 +15,7 @@ Prérequis:
     pip3 install opencv-python  # Pour webcam USB
 
 Usage:
-    python3 web_controller.py [--port 5000] [--serial /dev/ttyUSB0] [--camera]
+    python3 web_controller.py [--port 5000] [--serial /dev/ttyUSB0]
 
 Accès:
     http://raspberry-pi-ip:5000
@@ -27,27 +27,33 @@ import time
 import argparse
 import logging
 import threading
-import io
 from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request, Response
-from flask_socketio import SocketIO, emit
 
 # Configuration
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'mbot-ranger-secret'
-socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Essayer d'importer SocketIO avec le bon backend
+try:
+    from flask_socketio import SocketIO, emit
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+    SOCKETIO_AVAILABLE = True
+except ImportError:
+    SOCKETIO_AVAILABLE = False
+    socketio = None
 
 # Variables globales
 serial_port = None
 serial_lock = threading.Lock()
-connected = False
+robot_connected = False
 monitoring = False
 last_status = {}
 alert_history = []
 
 # Camera
 camera = None
-camera_enabled = False
+camera_streaming = False
 camera_lock = threading.Lock()
 camera_type = None  # 'picamera2', 'opencv', or None
 
@@ -64,94 +70,43 @@ HTML_PAGE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>mBot Ranger Controller</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
             min-height: 100vh;
             color: #fff;
             padding: 20px;
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        h1 {
-            text-align: center;
-            margin-bottom: 20px;
-            font-size: 2em;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
-        }
-        .main-layout {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-        @media (max-width: 900px) {
-            .main-layout {
-                grid-template-columns: 1fr;
-            }
-        }
-        .left-column, .right-column {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 20px; font-size: 1.8em; }
+        .main-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 900px) { .main-layout { grid-template-columns: 1fr; } }
         .status-bar {
             background: rgba(255,255,255,0.1);
             border-radius: 10px;
             padding: 15px;
             margin-bottom: 20px;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            justify-content: space-around;
             flex-wrap: wrap;
             gap: 10px;
         }
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .status-item { display: flex; align-items: center; gap: 8px; }
         .status-dot {
-            width: 12px;
-            height: 12px;
+            width: 12px; height: 12px;
             border-radius: 50%;
             background: #ff4444;
         }
-        .status-dot.connected {
-            background: #44ff44;
-            box-shadow: 0 0 10px #44ff44;
-        }
-        .status-dot.monitoring {
-            background: #4444ff;
-            box-shadow: 0 0 10px #4444ff;
-            animation: pulse 1.5s infinite;
-        }
-        .status-dot.camera-on {
-            background: #ff44ff;
-            box-shadow: 0 0 10px #ff44ff;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
+        .status-dot.on { background: #44ff44; box-shadow: 0 0 10px #44ff44; }
         .panel {
             background: rgba(255,255,255,0.1);
             border-radius: 15px;
             padding: 20px;
+            margin-bottom: 20px;
         }
-        .panel h2 {
-            margin-bottom: 15px;
-            font-size: 1.2em;
-            color: #88ccff;
-        }
+        .panel h2 { margin-bottom: 15px; font-size: 1.1em; color: #88ccff; }
         .camera-container {
             position: relative;
             background: #000;
@@ -159,170 +114,69 @@ HTML_PAGE = """
             overflow: hidden;
             aspect-ratio: 4/3;
         }
-        .camera-feed {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
+        .camera-feed { width: 100%; height: 100%; object-fit: contain; display: none; }
+        .camera-placeholder {
+            width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+            color: #666; font-size: 1em;
         }
         .camera-overlay {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            background: rgba(0,0,0,0.6);
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 0.8em;
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(255,0,0,0.8);
+            padding: 3px 8px; border-radius: 5px;
+            font-size: 0.7em; display: none;
         }
-        .camera-overlay.live {
-            background: rgba(255,0,0,0.7);
-        }
-        .camera-placeholder {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #666;
-            font-size: 1.2em;
-        }
-        .camera-controls {
-            display: flex;
-            gap: 10px;
-            margin-top: 10px;
-            justify-content: center;
-        }
+        .camera-controls { display: flex; gap: 10px; margin-top: 10px; justify-content: center; }
         .controls-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            max-width: 300px;
+            gap: 8px;
+            max-width: 240px;
             margin: 0 auto;
         }
         .btn {
             background: linear-gradient(145deg, #3a3a5c, #2a2a4c);
-            border: none;
-            border-radius: 10px;
-            padding: 20px;
-            color: #fff;
-            font-size: 1.5em;
-            cursor: pointer;
-            transition: all 0.2s;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            border: none; border-radius: 10px;
+            padding: 18px; color: #fff; font-size: 1.3em;
+            cursor: pointer; transition: all 0.2s;
         }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.4);
-        }
-        .btn:active {
-            transform: translateY(0);
-            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-        }
-        .btn.stop {
-            background: linear-gradient(145deg, #cc4444, #aa2222);
-            grid-column: 2;
-        }
-        .btn-row {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            justify-content: center;
-        }
+        .btn:hover { transform: translateY(-2px); }
+        .btn:active { transform: translateY(0); }
+        .btn.stop { background: linear-gradient(145deg, #cc4444, #aa2222); }
+        .btn-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
         .btn-small {
             background: linear-gradient(145deg, #3a5c3a, #2a4c2a);
-            border: none;
-            border-radius: 8px;
-            padding: 12px 20px;
-            color: #fff;
-            font-size: 0.9em;
+            border: none; border-radius: 8px;
+            padding: 10px 16px; color: #fff; font-size: 0.85em;
             cursor: pointer;
-            transition: all 0.2s;
-        }
-        .btn-small:hover {
-            transform: translateY(-2px);
         }
         .btn-small.red { background: linear-gradient(145deg, #cc4444, #aa2222); }
         .btn-small.green { background: linear-gradient(145deg, #44cc44, #22aa22); }
         .btn-small.blue { background: linear-gradient(145deg, #4444cc, #2222aa); }
         .btn-small.yellow { background: linear-gradient(145deg, #cccc44, #aaaa22); }
         .btn-small.purple { background: linear-gradient(145deg, #cc44cc, #aa22aa); }
-        .sensor-display {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-        }
+        .sensor-display { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
         .sensor-card {
             background: rgba(0,0,0,0.2);
-            border-radius: 10px;
-            padding: 12px;
-            text-align: center;
+            border-radius: 10px; padding: 12px; text-align: center;
         }
-        .sensor-value {
-            font-size: 1.5em;
-            font-weight: bold;
-            color: #88ff88;
-        }
-        .sensor-label {
-            font-size: 0.75em;
-            color: #aaa;
-            margin-top: 3px;
-        }
+        .sensor-value { font-size: 1.4em; font-weight: bold; color: #88ff88; }
+        .sensor-label { font-size: 0.7em; color: #aaa; margin-top: 3px; }
         .alerts-log {
-            max-height: 150px;
-            overflow-y: auto;
+            max-height: 120px; overflow-y: auto;
             background: rgba(0,0,0,0.2);
-            border-radius: 10px;
-            padding: 10px;
-        }
-        .alert-item {
-            padding: 6px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            font-size: 0.85em;
-        }
-        .alert-item:last-child {
-            border-bottom: none;
-        }
-        .alert-item.obstacle { border-left: 3px solid #ff4444; padding-left: 10px; }
-        .alert-item.motion { border-left: 3px solid #ffaa44; padding-left: 10px; }
-        .alert-item.button { border-left: 3px solid #44aaff; padding-left: 10px; }
-        .alert-time {
-            color: #888;
+            border-radius: 10px; padding: 10px;
             font-size: 0.8em;
         }
-        .toggle-container {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            justify-content: center;
-        }
-        .toggle-btn {
-            padding: 8px 15px;
-            border-radius: 20px;
-            border: 2px solid #555;
-            background: transparent;
-            color: #888;
-            cursor: pointer;
-            transition: all 0.3s;
-            font-size: 0.85em;
-        }
-        .toggle-btn.active {
-            border-color: #44ff44;
-            color: #44ff44;
-            background: rgba(68, 255, 68, 0.1);
-        }
-        .snapshot-btn {
-            background: linear-gradient(145deg, #5c3a5c, #4c2a4c);
-        }
-        @media (max-width: 500px) {
-            .controls-grid {
-                max-width: 220px;
-            }
-            .btn {
-                padding: 15px;
-                font-size: 1.2em;
-            }
-            .sensor-display {
-                grid-template-columns: repeat(3, 1fr);
-            }
+        .alert-item { padding: 5px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .alert-item.obstacle { border-left: 3px solid #ff4444; padding-left: 8px; }
+        .alert-item.motion { border-left: 3px solid #ffaa44; padding-left: 8px; }
+        .log-area {
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px; padding: 10px;
+            max-height: 100px; overflow-y: auto;
+            font-family: monospace; font-size: 0.75em;
+            color: #aaa;
         }
     </style>
 </head>
@@ -332,16 +186,12 @@ HTML_PAGE = """
 
         <div class="status-bar">
             <div class="status-item">
-                <div class="status-dot" id="connectionDot"></div>
-                <span id="connectionStatus">Deconnecte</span>
-            </div>
-            <div class="status-item">
-                <div class="status-dot" id="monitoringDot"></div>
-                <span id="monitoringStatus">Monitoring OFF</span>
+                <div class="status-dot" id="robotDot"></div>
+                <span id="robotStatus">Robot: --</span>
             </div>
             <div class="status-item">
                 <div class="status-dot" id="cameraDot"></div>
-                <span id="cameraStatus">Camera OFF</span>
+                <span id="cameraStatus">Camera: --</span>
             </div>
             <div class="status-item">
                 <span id="uptime">Uptime: --</span>
@@ -352,31 +202,29 @@ HTML_PAGE = """
             <div class="left-column">
                 <div class="panel">
                     <h2>Camera Pi</h2>
-                    <div class="camera-container" id="cameraContainer">
-                        <div class="camera-placeholder" id="cameraPlaceholder">
-                            Camera non disponible
-                        </div>
-                        <img class="camera-feed" id="cameraFeed" style="display: none;" alt="Camera Feed">
-                        <div class="camera-overlay" id="cameraOverlay" style="display: none;">LIVE</div>
+                    <div class="camera-container">
+                        <div class="camera-placeholder" id="cameraPlaceholder">Camera arretee</div>
+                        <img class="camera-feed" id="cameraFeed" alt="Camera">
+                        <div class="camera-overlay" id="cameraOverlay">LIVE</div>
                     </div>
                     <div class="camera-controls">
                         <button class="btn-small green" onclick="startCamera()">Demarrer</button>
                         <button class="btn-small red" onclick="stopCamera()">Arreter</button>
-                        <button class="btn-small snapshot-btn" onclick="takeSnapshot()">Snapshot</button>
+                        <button class="btn-small purple" onclick="snapshot()">Photo</button>
                     </div>
                 </div>
 
                 <div class="panel">
-                    <h2>Controles de mouvement</h2>
+                    <h2>Controles</h2>
                     <div class="controls-grid">
                         <div></div>
-                        <button class="btn" onclick="sendCommand('forward')" title="Avancer">^</button>
+                        <button class="btn" onclick="cmd('forward')">^</button>
                         <div></div>
-                        <button class="btn" onclick="sendCommand('left')" title="Gauche">&lt;</button>
-                        <button class="btn stop" onclick="sendCommand('stop')" title="Stop">X</button>
-                        <button class="btn" onclick="sendCommand('right')" title="Droite">&gt;</button>
+                        <button class="btn" onclick="cmd('left')">&lt;</button>
+                        <button class="btn stop" onclick="cmd('stop')">X</button>
+                        <button class="btn" onclick="cmd('right')">&gt;</button>
                         <div></div>
-                        <button class="btn" onclick="sendCommand('backward')" title="Reculer">v</button>
+                        <button class="btn" onclick="cmd('backward')">v</button>
                         <div></div>
                     </div>
                 </div>
@@ -386,12 +234,12 @@ HTML_PAGE = """
                 <div class="panel">
                     <h2>LEDs & Sons</h2>
                     <div class="btn-row">
-                        <button class="btn-small red" onclick="sendCommand('led_red')">Rouge</button>
-                        <button class="btn-small green" onclick="sendCommand('led_green')">Vert</button>
-                        <button class="btn-small blue" onclick="sendCommand('led_blue')">Bleu</button>
-                        <button class="btn-small" onclick="sendCommand('led_off')">Off</button>
-                        <button class="btn-small yellow" onclick="sendCommand('beep')">Beep</button>
-                        <button class="btn-small purple" onclick="sendCommand('alarm')">Alarme</button>
+                        <button class="btn-small red" onclick="cmd('led_red')">Rouge</button>
+                        <button class="btn-small green" onclick="cmd('led_green')">Vert</button>
+                        <button class="btn-small blue" onclick="cmd('led_blue')">Bleu</button>
+                        <button class="btn-small" onclick="cmd('led_off')">Off</button>
+                        <button class="btn-small yellow" onclick="cmd('beep')">Beep</button>
+                        <button class="btn-small purple" onclick="cmd('alarm')">Alarme</button>
                     </div>
                 </div>
 
@@ -415,217 +263,160 @@ HTML_PAGE = """
 
                 <div class="panel">
                     <h2>Monitoring</h2>
-                    <div class="btn-row" style="margin-bottom: 10px;">
-                        <button class="btn-small green" onclick="sendCommand('start')">Demarrer</button>
-                        <button class="btn-small red" onclick="sendCommand('stop')">Arreter</button>
-                        <button class="btn-small yellow" onclick="sendCommand('calibrate')">Calibrer</button>
-                        <button class="btn-small blue" onclick="sendCommand('status')">Status</button>
-                    </div>
-                    <div class="toggle-container">
-                        <button class="toggle-btn active" id="toggleObstacle" onclick="toggleAlert('obstacle')">
-                            Obstacles
-                        </button>
-                        <button class="toggle-btn active" id="toggleMotion" onclick="toggleAlert('motion')">
-                            Mouvement
-                        </button>
+                    <div class="btn-row">
+                        <button class="btn-small green" onclick="cmd('start')">Start</button>
+                        <button class="btn-small red" onclick="cmd('stop')">Stop</button>
+                        <button class="btn-small yellow" onclick="cmd('calibrate')">Calibrer</button>
+                        <button class="btn-small blue" onclick="cmd('status')">Status</button>
                     </div>
                 </div>
 
                 <div class="panel">
-                    <h2>Historique des alertes</h2>
-                    <div class="alerts-log" id="alertsLog">
-                        <div class="alert-item" style="color: #888;">En attente d'alertes...</div>
-                    </div>
+                    <h2>Log</h2>
+                    <div class="log-area" id="logArea">En attente...</div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        const socket = io();
-        let obstacleEnabled = true;
-        let motionEnabled = true;
-        let cameraActive = false;
+        // Polling-based approach (plus fiable que WebSocket dans certains cas)
+        let pollInterval = null;
 
-        // Connexion WebSocket
-        socket.on('connect', function() {
-            console.log('WebSocket connecte');
-            document.getElementById('connectionDot').classList.add('connected');
-            document.getElementById('connectionStatus').textContent = 'Connecte';
-            setTimeout(() => sendCommand('status'), 500);
-            checkCameraStatus();
-        });
-
-        socket.on('disconnect', function() {
-            console.log('WebSocket deconnecte');
-            document.getElementById('connectionDot').classList.remove('connected');
-            document.getElementById('connectionStatus').textContent = 'Deconnecte';
-        });
-
-        // Reception des mises a jour de status
-        socket.on('status', function(data) {
-            if (data.distance !== undefined) {
-                document.getElementById('distanceValue').textContent = data.distance.toFixed(1);
-            }
-            if (data.light !== undefined) {
-                document.getElementById('lightValue').textContent = data.light;
-            }
-            if (data.baseline !== undefined) {
-                document.getElementById('baselineValue').textContent = data.baseline.toFixed(1);
-            }
-            if (data.uptime !== undefined) {
-                document.getElementById('uptime').textContent = 'Uptime: ' + formatUptime(data.uptime);
-            }
-            if (data.monitoring !== undefined) {
-                const dot = document.getElementById('monitoringDot');
-                const status = document.getElementById('monitoringStatus');
-                if (data.monitoring) {
-                    dot.classList.add('monitoring');
-                    status.textContent = 'Monitoring ON';
-                } else {
-                    dot.classList.remove('monitoring');
-                    status.textContent = 'Monitoring OFF';
-                }
-            }
-        });
-
-        // Reception des alertes
-        socket.on('alert', function(data) {
-            addAlertToLog(data);
-        });
-
-        socket.on('message', function(data) {
-            console.log('Message:', data);
-        });
-
-        function sendCommand(cmd) {
-            socket.emit('command', {command: cmd});
-        }
-
-        function toggleAlert(type) {
-            const btn = document.getElementById('toggle' + type.charAt(0).toUpperCase() + type.slice(1));
-            if (type === 'obstacle') {
-                obstacleEnabled = !obstacleEnabled;
-                sendCommand(obstacleEnabled ? 'obstacle_on' : 'obstacle_off');
-                btn.classList.toggle('active', obstacleEnabled);
-            } else if (type === 'motion') {
-                motionEnabled = !motionEnabled;
-                sendCommand(motionEnabled ? 'motion_on' : 'motion_off');
-                btn.classList.toggle('active', motionEnabled);
-            }
-        }
-
-        function addAlertToLog(data) {
-            const log = document.getElementById('alertsLog');
-            const alertType = data.alert || 'info';
-            const message = data.message || 'Alerte';
-            const value = data.value !== undefined ? ` (${data.value})` : '';
+        function log(msg) {
+            const area = document.getElementById('logArea');
             const time = new Date().toLocaleTimeString();
-
-            const item = document.createElement('div');
-            item.className = 'alert-item ' + alertType;
-            item.innerHTML = `<span class="alert-time">${time}</span> - <strong>${alertType.toUpperCase()}</strong>: ${message}${value}`;
-
-            if (log.children.length === 1 && log.children[0].style.color === 'rgb(136, 136, 136)') {
-                log.innerHTML = '';
-            }
-
-            log.insertBefore(item, log.firstChild);
-
-            while (log.children.length > 50) {
-                log.removeChild(log.lastChild);
+            area.innerHTML = `[${time}] ${msg}<br>` + area.innerHTML;
+            if (area.children.length > 20) {
+                area.removeChild(area.lastChild);
             }
         }
 
-        function formatUptime(seconds) {
-            const h = Math.floor(seconds / 3600);
-            const m = Math.floor((seconds % 3600) / 60);
-            const s = seconds % 60;
-            if (h > 0) return `${h}h ${m}m ${s}s`;
-            if (m > 0) return `${m}m ${s}s`;
-            return `${s}s`;
+        function cmd(command) {
+            log('Envoi: ' + command);
+            fetch('/api/command', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({command: command})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    log('OK: ' + command);
+                } else {
+                    log('Erreur: ' + (data.error || 'echec'));
+                }
+            })
+            .catch(e => log('Erreur reseau: ' + e));
         }
 
-        // Camera functions
-        function checkCameraStatus() {
-            fetch('/api/camera/status')
-                .then(r => r.json())
-                .then(data => {
-                    updateCameraUI(data.available, data.streaming);
-                });
-        }
+        function updateStatus() {
+            fetch('/api/status')
+            .then(r => r.json())
+            .then(data => {
+                // Robot
+                const robotDot = document.getElementById('robotDot');
+                const robotStatus = document.getElementById('robotStatus');
+                if (data.robot_connected) {
+                    robotDot.classList.add('on');
+                    robotStatus.textContent = 'Robot: OK';
+                } else {
+                    robotDot.classList.remove('on');
+                    robotStatus.textContent = 'Robot: Deconnecte';
+                }
 
-        function updateCameraUI(available, streaming) {
-            const dot = document.getElementById('cameraDot');
-            const status = document.getElementById('cameraStatus');
-            const feed = document.getElementById('cameraFeed');
-            const placeholder = document.getElementById('cameraPlaceholder');
-            const overlay = document.getElementById('cameraOverlay');
+                // Camera
+                const cameraDot = document.getElementById('cameraDot');
+                const cameraStatus = document.getElementById('cameraStatus');
+                if (data.camera_streaming) {
+                    cameraDot.classList.add('on');
+                    cameraStatus.textContent = 'Camera: ON';
+                } else if (data.camera_available) {
+                    cameraDot.classList.remove('on');
+                    cameraStatus.textContent = 'Camera: OFF';
+                } else {
+                    cameraDot.classList.remove('on');
+                    cameraStatus.textContent = 'Camera: N/A';
+                }
 
-            if (!available) {
-                status.textContent = 'Camera N/A';
-                placeholder.textContent = 'Camera non disponible';
-                placeholder.style.display = 'flex';
-                feed.style.display = 'none';
-                overlay.style.display = 'none';
-            } else if (streaming) {
-                dot.classList.add('camera-on');
-                status.textContent = 'Camera ON';
-                placeholder.style.display = 'none';
-                feed.style.display = 'block';
-                feed.src = '/video_feed?' + Date.now();
-                overlay.style.display = 'block';
-                overlay.classList.add('live');
-                cameraActive = true;
-            } else {
-                dot.classList.remove('camera-on');
-                status.textContent = 'Camera OFF';
-                placeholder.textContent = 'Camera arretee';
-                placeholder.style.display = 'flex';
-                feed.style.display = 'none';
-                overlay.style.display = 'none';
-                cameraActive = false;
-            }
+                // Sensors
+                if (data.last_status) {
+                    const s = data.last_status;
+                    if (s.distance !== undefined) {
+                        document.getElementById('distanceValue').textContent = s.distance.toFixed(1);
+                    }
+                    if (s.light !== undefined) {
+                        document.getElementById('lightValue').textContent = s.light;
+                    }
+                    if (s.baseline !== undefined) {
+                        document.getElementById('baselineValue').textContent = s.baseline.toFixed(1);
+                    }
+                    if (s.uptime !== undefined) {
+                        document.getElementById('uptime').textContent = 'Uptime: ' + s.uptime + 's';
+                    }
+                }
+            })
+            .catch(e => {});
         }
 
         function startCamera() {
+            log('Demarrage camera...');
             fetch('/api/camera/start', {method: 'POST'})
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        updateCameraUI(true, true);
-                    } else {
-                        alert('Erreur: ' + (data.error || 'Camera non disponible'));
-                    }
-                });
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    log('Camera demarree');
+                    showCameraFeed();
+                } else {
+                    log('Erreur camera: ' + (data.error || 'echec'));
+                }
+            })
+            .catch(e => log('Erreur: ' + e));
         }
 
         function stopCamera() {
+            log('Arret camera...');
             fetch('/api/camera/stop', {method: 'POST'})
-                .then(r => r.json())
-                .then(data => {
-                    updateCameraUI(data.available, false);
-                });
+            .then(r => r.json())
+            .then(data => {
+                log('Camera arretee');
+                hideCameraFeed();
+            });
         }
 
-        function takeSnapshot() {
-            if (!cameraActive) {
-                alert('Demarrez la camera d\'abord');
-                return;
-            }
+        function showCameraFeed() {
+            document.getElementById('cameraPlaceholder').style.display = 'none';
+            const feed = document.getElementById('cameraFeed');
+            feed.src = '/video_feed?' + Date.now();
+            feed.style.display = 'block';
+            document.getElementById('cameraOverlay').style.display = 'block';
+        }
+
+        function hideCameraFeed() {
+            document.getElementById('cameraPlaceholder').style.display = 'flex';
+            document.getElementById('cameraFeed').style.display = 'none';
+            document.getElementById('cameraOverlay').style.display = 'none';
+        }
+
+        function snapshot() {
             window.open('/snapshot?' + Date.now(), '_blank');
         }
 
         // Raccourcis clavier
         document.addEventListener('keydown', function(e) {
             switch(e.key) {
-                case 'ArrowUp': case 'z': case 'w': sendCommand('forward'); break;
-                case 'ArrowDown': case 's': sendCommand('backward'); break;
-                case 'ArrowLeft': case 'q': case 'a': sendCommand('left'); break;
-                case 'ArrowRight': case 'd': sendCommand('right'); break;
-                case ' ': sendCommand('stop'); e.preventDefault(); break;
+                case 'ArrowUp': case 'z': case 'w': cmd('forward'); break;
+                case 'ArrowDown': case 's': cmd('backward'); break;
+                case 'ArrowLeft': case 'q': case 'a': cmd('left'); break;
+                case 'ArrowRight': case 'd': cmd('right'); break;
+                case ' ': cmd('stop'); e.preventDefault(); break;
             }
         });
+
+        // Demarrer le polling
+        updateStatus();
+        pollInterval = setInterval(updateStatus, 2000);
+        log('Interface prete');
     </script>
 </body>
 </html>
@@ -635,7 +426,7 @@ HTML_PAGE = """
 
 def init_camera():
     """Initialise la caméra (picamera2 ou OpenCV)"""
-    global camera, camera_enabled, camera_type
+    global camera, camera_type
 
     # Essayer picamera2 d'abord (Raspberry Pi Camera)
     try:
@@ -645,8 +436,7 @@ def init_camera():
             main={"size": (640, 480), "format": "RGB888"}
         ))
         camera_type = 'picamera2'
-        camera_enabled = True
-        logger.info("Camera Pi initialisee (picamera2)")
+        logger.info("Camera Pi detectee (picamera2)")
         return True
     except ImportError:
         logger.debug("picamera2 non disponible")
@@ -656,75 +446,71 @@ def init_camera():
     # Essayer OpenCV (webcam USB)
     try:
         import cv2
-        camera = cv2.VideoCapture(0)
-        if camera.isOpened():
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cam = cv2.VideoCapture(0)
+        if cam.isOpened():
+            cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            camera = cam
             camera_type = 'opencv'
-            camera_enabled = True
-            logger.info("Camera USB initialisee (OpenCV)")
+            logger.info("Camera USB detectee (OpenCV)")
             return True
         else:
-            camera.release()
-            camera = None
+            cam.release()
     except ImportError:
         logger.debug("OpenCV non disponible")
     except Exception as e:
         logger.warning(f"Erreur OpenCV: {e}")
 
-    camera_enabled = False
+    camera = None
     camera_type = None
     logger.info("Aucune camera disponible")
     return False
 
 def start_camera_stream():
     """Démarre le streaming caméra"""
-    global camera, camera_enabled
+    global camera_streaming
     with camera_lock:
-        if camera_type == 'picamera2' and camera:
-            try:
+        if camera is None:
+            return False
+        try:
+            if camera_type == 'picamera2':
                 camera.start()
-                camera_enabled = True
-                return True
-            except Exception as e:
-                logger.error(f"Erreur démarrage picamera2: {e}")
-        elif camera_type == 'opencv' and camera:
-            camera_enabled = True
+            camera_streaming = True
+            logger.info("Camera streaming demarre")
             return True
-    return False
+        except Exception as e:
+            logger.error(f"Erreur demarrage camera: {e}")
+            return False
 
 def stop_camera_stream():
     """Arrête le streaming caméra"""
-    global camera_enabled
+    global camera_streaming
     with camera_lock:
-        if camera_type == 'picamera2' and camera:
-            try:
+        try:
+            if camera_type == 'picamera2' and camera:
                 camera.stop()
-            except:
-                pass
-        camera_enabled = False
+        except:
+            pass
+        camera_streaming = False
+        logger.info("Camera streaming arrete")
 
 def get_camera_frame():
     """Capture une frame de la caméra"""
-    global camera
     with camera_lock:
-        if not camera_enabled or not camera:
+        if not camera_streaming or camera is None:
             return None
-
         try:
             if camera_type == 'picamera2':
-                frame = camera.capture_array()
-                # Convertir RGB en JPEG
                 import cv2
+                frame = camera.capture_array()
                 _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
-                                       [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                       [cv2.IMWRITE_JPEG_QUALITY, 70])
                 return jpeg.tobytes()
             elif camera_type == 'opencv':
                 import cv2
                 ret, frame = camera.read()
                 if ret:
-                    _, jpeg = cv2.imencode('.jpg', frame,
-                                          [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return jpeg.tobytes()
         except Exception as e:
             logger.error(f"Erreur capture: {e}")
@@ -732,37 +518,39 @@ def get_camera_frame():
 
 def generate_frames():
     """Générateur de frames pour le streaming MJPEG"""
-    while camera_enabled:
+    while camera_streaming:
         frame = get_camera_frame()
         if frame:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-        time.sleep(0.033)  # ~30 FPS
+        time.sleep(0.05)  # ~20 FPS
 
 # ==================== SERIAL COMMUNICATION ====================
 
 def connect_serial(port, baudrate=115200):
     """Connexion au port série"""
-    global serial_port, connected
+    global serial_port, robot_connected
     try:
         serial_port = serial.Serial(port, baudrate, timeout=1)
-        connected = True
-        logger.info(f"Connecté à {port}")
+        robot_connected = True
+        logger.info(f"Connecte au robot sur {port}")
         time.sleep(2)
         return True
     except Exception as e:
-        logger.error(f"Erreur connexion série: {e}")
-        connected = False
+        logger.error(f"Erreur connexion serie: {e}")
+        robot_connected = False
         return False
 
 def disconnect_serial():
     """Déconnexion série"""
-    global serial_port, connected
+    global serial_port, robot_connected
     if serial_port and serial_port.is_open:
-        send_serial_command("stop")
-        serial_port.close()
-    connected = False
-    logger.info("Déconnecté du port série")
+        try:
+            serial_port.write(b"stop\n")
+            serial_port.close()
+        except:
+            pass
+    robot_connected = False
 
 def send_serial_command(command):
     """Envoie une commande au robot"""
@@ -771,61 +559,43 @@ def send_serial_command(command):
         if serial_port and serial_port.is_open:
             try:
                 serial_port.write(f"{command}\n".encode())
-                logger.debug(f"Envoyé: {command}")
+                logger.info(f"Envoye: {command}")
                 return True
             except Exception as e:
                 logger.error(f"Erreur envoi: {e}")
     return False
 
-def read_serial_message():
-    """Lit un message du robot"""
-    global serial_port
+def read_serial_messages():
+    """Lit les messages du robot"""
+    global serial_port, last_status, monitoring
     with serial_lock:
         if serial_port and serial_port.is_open:
             try:
-                if serial_port.in_waiting:
+                while serial_port.in_waiting:
                     line = serial_port.readline().decode('utf-8').strip()
                     if line:
-                        return json.loads(line)
-            except json.JSONDecodeError:
-                pass
+                        try:
+                            data = json.loads(line)
+                            msg_type = data.get("type", "")
+                            if msg_type == "status":
+                                last_status = data
+                                monitoring = data.get("monitoring", False)
+                            elif msg_type == "alert":
+                                alert_history.insert(0, data)
+                                if len(alert_history) > 50:
+                                    alert_history.pop()
+                            logger.debug(f"Recu: {data}")
+                        except json.JSONDecodeError:
+                            logger.debug(f"Message non-JSON: {line}")
             except Exception as e:
                 logger.error(f"Erreur lecture: {e}")
-    return None
 
 def serial_reader_thread():
     """Thread de lecture série"""
-    global last_status, monitoring
     while True:
-        if connected:
-            data = read_serial_message()
-            if data:
-                msg_type = data.get("type", "")
-
-                if msg_type == "status":
-                    last_status = data
-                    monitoring = data.get("monitoring", False)
-                    socketio.emit('status', data)
-
-                elif msg_type == "alert":
-                    alert_history.insert(0, {
-                        "time": datetime.now().isoformat(),
-                        **data
-                    })
-                    if len(alert_history) > 100:
-                        alert_history.pop()
-                    socketio.emit('alert', data)
-
-                elif msg_type == "heartbeat":
-                    socketio.emit('status', {"uptime": data.get("uptime", 0)})
-
-                elif msg_type in ["ack", "monitoring", "calibration", "ready", "startup"]:
-                    socketio.emit('message', data)
-                    if msg_type == "monitoring":
-                        monitoring = "started" in data.get("message", "").lower()
-                        socketio.emit('status', {"monitoring": monitoring})
-
-        time.sleep(0.05)
+        if robot_connected:
+            read_serial_messages()
+        time.sleep(0.1)
 
 # ==================== ROUTES FLASK ====================
 
@@ -838,27 +608,27 @@ def index():
 def api_status():
     """API: Status actuel"""
     return jsonify({
-        "connected": connected,
+        "robot_connected": robot_connected,
         "monitoring": monitoring,
         "last_status": last_status,
         "camera_available": camera is not None,
-        "camera_streaming": camera_enabled
+        "camera_streaming": camera_streaming
     })
-
-@app.route('/api/alerts')
-def api_alerts():
-    """API: Historique des alertes"""
-    return jsonify(alert_history[:50])
 
 @app.route('/api/command', methods=['POST'])
 def api_command():
     """API: Envoyer une commande"""
-    data = request.json
+    data = request.json or {}
     cmd = data.get('command', '')
     if cmd:
         success = send_serial_command(cmd)
         return jsonify({"success": success, "command": cmd})
     return jsonify({"success": False, "error": "No command"})
+
+@app.route('/api/alerts')
+def api_alerts():
+    """API: Historique des alertes"""
+    return jsonify(alert_history[:50])
 
 # Camera API
 @app.route('/api/camera/status')
@@ -866,7 +636,7 @@ def api_camera_status():
     """API: Status caméra"""
     return jsonify({
         "available": camera is not None,
-        "streaming": camera_enabled,
+        "streaming": camera_streaming,
         "type": camera_type
     })
 
@@ -882,12 +652,12 @@ def api_camera_start():
 def api_camera_stop():
     """API: Arrêter la caméra"""
     stop_camera_stream()
-    return jsonify({"success": True, "available": camera is not None})
+    return jsonify({"success": True})
 
 @app.route('/video_feed')
 def video_feed():
     """Streaming vidéo MJPEG"""
-    if not camera_enabled:
+    if not camera_streaming:
         return "Camera not streaming", 503
     return Response(generate_frames(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -895,45 +665,28 @@ def video_feed():
 @app.route('/snapshot')
 def snapshot():
     """Capture une image"""
+    if not camera_streaming:
+        # Démarrer temporairement pour la capture
+        start_camera_stream()
+        time.sleep(0.5)
     frame = get_camera_frame()
     if frame:
-        return Response(frame, mimetype='image/jpeg')
+        return Response(frame, mimetype='image/jpeg',
+                       headers={'Content-Disposition': 'inline; filename=snapshot.jpg'})
     return "Camera not available", 503
-
-# ==================== WEBSOCKET HANDLERS ====================
-
-@socketio.on('connect')
-def handle_connect():
-    """Client WebSocket connecté"""
-    logger.info("Client WebSocket connecté")
-    emit('status', {
-        "connected": connected,
-        "monitoring": monitoring,
-        **last_status
-    })
-
-@socketio.on('command')
-def handle_command(data):
-    """Réception d'une commande WebSocket"""
-    cmd = data.get('command', '')
-    if cmd:
-        send_serial_command(cmd)
-        logger.info(f"Commande reçue: {cmd}")
 
 # ==================== MAIN ====================
 
 def main():
     parser = argparse.ArgumentParser(description='mBot Ranger Web Controller')
     parser.add_argument('--port', '-p', default='/dev/ttyUSB0',
-                       help='Port série (défaut: /dev/ttyUSB0)')
+                       help='Port serie (defaut: /dev/ttyUSB0)')
     parser.add_argument('--web-port', '-w', type=int, default=5000,
-                       help='Port web (défaut: 5000)')
+                       help='Port web (defaut: 5000)')
     parser.add_argument('--host', '-H', default='0.0.0.0',
-                       help='Adresse d\'écoute (défaut: 0.0.0.0)')
-    parser.add_argument('--camera', '-c', action='store_true',
-                       help='Activer la caméra')
+                       help='Adresse ecoute (defaut: 0.0.0.0)')
     parser.add_argument('--no-camera', action='store_true',
-                       help='Désactiver la caméra')
+                       help='Desactiver la camera')
     parser.add_argument('--debug', '-d', action='store_true',
                        help='Mode debug')
 
@@ -944,25 +697,25 @@ def main():
 
     # Connexion série
     if not connect_serial(args.port):
-        logger.warning("Démarrage sans connexion série (mode test)")
+        logger.warning(f"Robot non connecte sur {args.port}")
 
     # Initialisation caméra
     if not args.no_camera:
         init_camera()
 
     # Thread de lecture série
-    reader_thread = threading.Thread(target=serial_reader_thread, daemon=True)
-    reader_thread.start()
+    reader = threading.Thread(target=serial_reader_thread, daemon=True)
+    reader.start()
 
     # Démarrer le serveur
-    logger.info(f"Serveur web sur http://{args.host}:{args.web_port}")
-    logger.info("Ouvrez cette adresse dans votre navigateur")
+    logger.info(f"Serveur web: http://{args.host}:{args.web_port}")
     if camera:
-        logger.info(f"Camera disponible ({camera_type})")
+        logger.info(f"Camera: {camera_type}")
 
     try:
-        socketio.run(app, host=args.host, port=args.web_port,
-                    debug=args.debug, allow_unsafe_werkzeug=True)
+        # Utiliser le serveur Flask simple (plus fiable)
+        app.run(host=args.host, port=args.web_port,
+                debug=args.debug, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
         pass
     finally:
