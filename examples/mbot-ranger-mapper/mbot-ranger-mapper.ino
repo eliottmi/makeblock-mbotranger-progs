@@ -235,11 +235,56 @@ void handleCommand(char cmd) {
       testScan360();
       break;
 
+    case 'g':
+    case 'G':
+      debugGyro();
+      break;
+
     case 'q':
     case 'Q':
       stopMapping();
       break;
   }
+}
+
+// Debug: afficher les valeurs du gyroscope en live
+void debugGyro() {
+  Serial.println("\n=== DEBUG GYROSCOPE ===");
+  Serial.println("Appuyer sur une touche pour arrêter...");
+  Serial.println("AngleX | AngleY | AngleZ");
+  Serial.println("------------------------");
+
+  while (!Serial.available()) {
+    gyro.update();
+
+    float angleX = gyro.getAngleX();
+    float angleY = gyro.getAngleY();
+    float angleZ = gyro.getAngleZ();
+
+    Serial.print(angleX, 2);
+    Serial.print("\t| ");
+    Serial.print(angleY, 2);
+    Serial.print("\t| ");
+    Serial.println(angleZ, 2);
+
+    // LED indique le niveau d'inclinaison
+    int tilt = abs((int)angleX) + abs((int)angleY);
+    if (tilt < 5) {
+      setLedColor(0, 255, 0);  // Vert = stable
+    } else if (tilt < 15) {
+      setLedColor(255, 255, 0);  // Jaune = légère inclinaison
+    } else {
+      setLedColor(255, 0, 0);  // Rouge = forte inclinaison
+    }
+
+    delay(100);
+  }
+
+  // Vider le buffer
+  while (Serial.available()) Serial.read();
+
+  Serial.println("=== FIN DEBUG ===\n");
+  setLedColor(0, 50, 0);
 }
 
 // ==================== CALIBRATION GYROSCOPE ====================
