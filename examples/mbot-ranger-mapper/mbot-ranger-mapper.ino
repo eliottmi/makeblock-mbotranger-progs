@@ -1,22 +1,22 @@
 /**
- * mBot Ranger Mapper (Cartographe)
+ * mBot Ranger Mapper (Cartographe) v2
  *
  * Ce programme fait cartographier une zone au robot:
- * - Utilise l'odométrie (encodeurs) pour estimer sa position
- * - Scanne avec le capteur ultrasonique pour détecter les obstacles
+ * - Utilise le GYROSCOPE pour mesurer précisément l'orientation
+ * - Effectue un SCAN 360° complet à chaque position
+ * - Détecte les COLLISIONS via l'accéléromètre
  * - Construit une carte 2D de l'environnement
- * - Affiche la carte sur le moniteur série
  *
  * Matériel: Makeblock mBot Ranger (carte Me Auriga)
  *           Capteur ultrasonique sur port 10
- *
- * Bibliothèque requise: MakeblockDrive
+ *           Gyroscope intégré sur la carte Auriga
  *
  * @author Makeblock Community
  * @license MIT
  */
 
 #include <MeAuriga.h>
+#include <Wire.h>
 #include <math.h>
 
 // ==================== CONFIGURATION MATÉRIELLE ====================
@@ -28,6 +28,9 @@ MeEncoderOnBoard motorRight(SLOT2);
 // Capteur ultrasonique
 MeUltrasonicSensor ultraSensor(PORT_10);
 
+// Gyroscope intégré (sur la carte Auriga)
+MeGyro gyro(1, 0x69);  // Port 1, adresse I2C
+
 // LEDs RGB
 MeRGBLed rgbLed(0, 12);
 
@@ -38,42 +41,52 @@ MeBuzzer buzzer;
 // ==================== PARAMÈTRES DU ROBOT ====================
 
 // Dimensions du robot (en cm)
-const float WHEEL_DIAMETER = 6.4;      // Diamètre des roues
-const float WHEEL_BASE = 13.0;         // Distance entre les roues
-const float PULSES_PER_REV = 9.0;      // Impulsions par tour encodeur
-const float GEAR_RATIO = 39.267;       // Rapport de réduction
+const float WHEEL_DIAMETER = 6.4;
+const float WHEEL_BASE = 13.0;
+const float PULSES_PER_REV = 9.0;
+const float GEAR_RATIO = 39.267;
 const float CM_PER_PULSE = (PI * WHEEL_DIAMETER) / (PULSES_PER_REV * GEAR_RATIO);
 
 // Vitesses
-const int SPEED_MOVE = 120;
-const int SPEED_TURN = 100;
+const int SPEED_MOVE = 100;
+const int SPEED_TURN = 80;
+const int SPEED_SCAN = 60;  // Vitesse lente pour le scan
 
 // ==================== PARAMÈTRES DE LA CARTE ====================
 
-// Taille de la grille (en cellules)
-const int MAP_WIDTH = 30;
-const int MAP_HEIGHT = 30;
-
-// Taille d'une cellule (en cm)
-const float CELL_SIZE = 10.0;
+const int MAP_WIDTH = 25;
+const int MAP_HEIGHT = 25;
+const float CELL_SIZE = 10.0;  // 10 cm par cellule
 
 // Types de cellules
 const uint8_t CELL_UNKNOWN = 0;
 const uint8_t CELL_FREE = 1;
 const uint8_t CELL_OBSTACLE = 2;
-const uint8_t CELL_ROBOT = 3;
 
 // La carte
 uint8_t gridMap[MAP_HEIGHT][MAP_WIDTH];
 
+// ==================== PARAMÈTRES DE SCAN ====================
+
+// Scan 360° avec mesures tous les 15 degrés
+const int SCAN_STEP = 15;
+const int NUM_SCAN_POINTS = 360 / SCAN_STEP;  // 24 mesures
+float scanDistances[24];  // Distances mesurées
+float scanAngles[24];     // Angles correspondants
+
+// Seuils
+const float MAX_DISTANCE = 150.0;     // Distance max fiable (cm)
+const float MIN_DISTANCE = 5.0;       // Distance min (cm)
+const float COLLISION_THRESHOLD = 2.0; // Seuil accéléromètre pour collision
+
 // ==================== ODOMÉTRIE ====================
 
-// Position et orientation du robot (en cm et radians)
-float robotX = MAP_WIDTH * CELL_SIZE / 2;   // Centre de la carte
+float robotX = MAP_WIDTH * CELL_SIZE / 2;
 float robotY = MAP_HEIGHT * CELL_SIZE / 2;
-float robotAngle = 0;  // 0 = vers la droite, PI/2 = vers le haut
+float robotAngle = 0;  // Angle en radians (du gyroscope)
+float gyroAngleOffset = 0;
 
-// Compteurs d'encodeurs
+// Encodeurs
 volatile long encoderLeft = 0;
 volatile long encoderRight = 0;
 long lastEncoderLeft = 0;
@@ -83,39 +96,43 @@ long lastEncoderRight = 0;
 
 enum RobotState {
   STATE_IDLE,
-  STATE_SCANNING,
+  STATE_CALIBRATING,
+  STATE_SCANNING_360,
+  STATE_PROCESSING_SCAN,
   STATE_MOVING,
-  STATE_TURNING,
+  STATE_AVOIDING,
   STATE_FINISHED
 };
 
 RobotState currentState = STATE_IDLE;
-int scanAngleIndex = 0;
 int explorationStep = 0;
-
-// Angles de scan (en degrés, relatifs à l'avant du robot)
-const int SCAN_ANGLES[] = {0, 45, 90, 135, 180, -135, -90, -45};
-const int NUM_SCAN_ANGLES = 8;
+int currentScanIndex = 0;
+float targetAngle = 0;
+bool collisionDetected = false;
 
 // ==================== SETUP ====================
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("mBot Ranger Mapper");
-  Serial.println("==================");
+  Serial.println("mBot Ranger Mapper v2");
+  Serial.println("=====================");
+  Serial.println("Avec Gyroscope et Scan 360°");
 
-  // Initialisation du buzzer
+  // Initialisation buzzer
   buzzer.setpin(BUZZER_PIN);
 
-  // Initialisation des LEDs
+  // Initialisation LEDs
   rgbLed.setpin(44);
   clearLeds();
 
-  // Initialisation des encodeurs
+  // Initialisation gyroscope
+  gyro.begin();
+  delay(100);
+
+  // Initialisation encodeurs
   attachInterrupt(motorLeft.getIntNum(), interruptLeft, RISING);
   attachInterrupt(motorRight.getIntNum(), interruptRight, RISING);
 
-  // Configuration des moteurs
   motorLeft.setPulse(9);
   motorRight.setPulse(9);
   motorLeft.setRatio(39.267);
@@ -127,18 +144,21 @@ void setup() {
   // Animation de démarrage
   startupAnimation();
 
-  Serial.println("\nCommandes disponibles:");
+  Serial.println("\nCommandes:");
   Serial.println("  's' - Démarrer la cartographie");
   Serial.println("  'p' - Afficher la carte");
-  Serial.println("  'r' - Réinitialiser la carte");
+  Serial.println("  'r' - Réinitialiser");
+  Serial.println("  'c' - Calibrer gyroscope");
+  Serial.println("  't' - Test scan 360°");
   Serial.println("  'q' - Arrêter");
-
-  delay(1000);
 }
 
 // ==================== LOOP PRINCIPAL ====================
 
 void loop() {
+  // Mise à jour du gyroscope
+  gyro.update();
+
   // Lire les commandes série
   if (Serial.available()) {
     char cmd = Serial.read();
@@ -147,16 +167,24 @@ void loop() {
 
   // Machine à états
   switch (currentState) {
-    case STATE_SCANNING:
-      scanLoop();
+    case STATE_CALIBRATING:
+      calibrateLoop();
+      break;
+
+    case STATE_SCANNING_360:
+      scanning360Loop();
+      break;
+
+    case STATE_PROCESSING_SCAN:
+      processScanData();
       break;
 
     case STATE_MOVING:
       moveLoop();
       break;
 
-    case STATE_TURNING:
-      turnLoop();
+    case STATE_AVOIDING:
+      avoidLoop();
       break;
 
     case STATE_FINISHED:
@@ -167,11 +195,14 @@ void loop() {
       break;
   }
 
-  // Mise à jour de l'odométrie
+  // Vérifier les collisions en permanence
+  checkCollision();
+
+  // Mise à jour odométrie
   updateOdometry();
 }
 
-// ==================== GESTION DES COMMANDES ====================
+// ==================== COMMANDES ====================
 
 void handleCommand(char cmd) {
   switch (cmd) {
@@ -188,7 +219,20 @@ void handleCommand(char cmd) {
     case 'r':
     case 'R':
       initMap();
+      robotX = MAP_WIDTH * CELL_SIZE / 2;
+      robotY = MAP_HEIGHT * CELL_SIZE / 2;
+      explorationStep = 0;
       Serial.println("Carte réinitialisée");
+      break;
+
+    case 'c':
+    case 'C':
+      startCalibration();
+      break;
+
+    case 't':
+    case 'T':
+      testScan360();
       break;
 
     case 'q':
@@ -198,126 +242,282 @@ void handleCommand(char cmd) {
   }
 }
 
+// ==================== CALIBRATION GYROSCOPE ====================
+
+void startCalibration() {
+  Serial.println("\nCalibration du gyroscope...");
+  Serial.println("Ne pas bouger le robot!");
+  setLedColor(255, 255, 0);  // Jaune
+
+  currentState = STATE_CALIBRATING;
+}
+
+void calibrateLoop() {
+  static int calibCount = 0;
+  static float angleSum = 0;
+
+  gyro.update();
+
+  if (calibCount < 50) {
+    angleSum += gyro.getAngleZ();
+    calibCount++;
+    delay(20);
+  } else {
+    gyroAngleOffset = angleSum / 50.0;
+    robotAngle = 0;
+
+    Serial.print("Calibration terminée. Offset: ");
+    Serial.println(gyroAngleOffset);
+
+    calibCount = 0;
+    angleSum = 0;
+    currentState = STATE_IDLE;
+    setLedColor(0, 255, 0);
+    buzzer.tone(1000, 200);
+  }
+}
+
 // ==================== CARTOGRAPHIE ====================
 
 void startMapping() {
-  Serial.println("\n*** DÉMARRAGE CARTOGRAPHIE ***\n");
-  setLedColor(0, 0, 255);  // Bleu
+  Serial.println("\n*** DÉMARRAGE CARTOGRAPHIE ***");
+  setLedColor(0, 0, 255);
 
-  // Réinitialiser la position au centre
-  robotX = MAP_WIDTH * CELL_SIZE / 2;
-  robotY = MAP_HEIGHT * CELL_SIZE / 2;
+  // Calibrer d'abord
+  gyroAngleOffset = gyro.getAngleZ();
   robotAngle = 0;
   explorationStep = 0;
 
   // Marquer la position initiale
-  markRobotPosition();
+  markPosition(robotX, robotY, CELL_FREE);
 
-  // Commencer par un scan
-  scanAngleIndex = 0;
-  currentState = STATE_SCANNING;
+  // Commencer par un scan 360°
+  startScan360();
 
-  buzzer.tone(1000, 200);
+  buzzer.tone(800, 200);
 }
 
 void stopMapping() {
-  Serial.println("\n*** ARRÊT CARTOGRAPHIE ***\n");
+  Serial.println("\n*** ARRÊT ***");
   stopMotors();
   currentState = STATE_IDLE;
-  setLedColor(255, 0, 0);  // Rouge
-
+  setLedColor(0, 50, 0);
   printMap();
-  buzzer.tone(500, 200);
 }
 
-// ==================== SCAN ====================
+// ==================== SCAN 360° ====================
 
-void scanLoop() {
-  static unsigned long lastScanTime = 0;
-  static bool turning = false;
-  static float targetAngle = 0;
+void startScan360() {
+  Serial.println("\nScan 360° en cours...");
+  setLedColor(0, 100, 255);
 
-  if (!turning) {
-    // Effectuer une mesure
-    float distance = ultraSensor.distanceCm();
+  currentScanIndex = 0;
+  targetAngle = robotAngle;
 
-    if (distance > 0 && distance < 300) {
-      // Calculer la position de l'obstacle
-      float scanAngleRad = robotAngle + radians(SCAN_ANGLES[scanAngleIndex]);
-      float obsX = robotX + distance * cos(scanAngleRad);
-      float obsY = robotY + distance * sin(scanAngleRad);
+  // Réinitialiser les mesures
+  for (int i = 0; i < NUM_SCAN_POINTS; i++) {
+    scanDistances[i] = 0;
+    scanAngles[i] = 0;
+  }
 
-      // Marquer les cellules libres sur le trajet
-      markFreePath(robotX, robotY, obsX, obsY);
+  currentState = STATE_SCANNING_360;
+}
 
-      // Marquer l'obstacle
-      if (distance < 200) {  // Obstacle détecté
-        markObstacle(obsX, obsY);
-      }
+void scanning360Loop() {
+  gyro.update();
 
-      Serial.print("Scan ");
-      Serial.print(SCAN_ANGLES[scanAngleIndex]);
-      Serial.print("°: ");
-      Serial.print(distance);
-      Serial.println(" cm");
-    }
+  // Calculer l'angle actuel depuis le gyroscope
+  float currentGyroAngle = (gyro.getAngleZ() - gyroAngleOffset);
+  float currentAngleRad = radians(currentGyroAngle);
 
-    // Passer à l'angle suivant
-    scanAngleIndex++;
+  // Angle cible pour cette mesure
+  float targetScanAngle = currentScanIndex * SCAN_STEP;
 
-    if (scanAngleIndex >= NUM_SCAN_ANGLES) {
-      // Scan complet, passer à l'exploration
-      scanAngleIndex = 0;
-      setLedColor(0, 255, 0);  // Vert
+  // Tourner vers l'angle cible
+  float angleDiff = targetScanAngle - currentGyroAngle;
 
-      // Décider du prochain mouvement
-      decideNextMove();
+  // Normaliser
+  while (angleDiff > 180) angleDiff -= 360;
+  while (angleDiff < -180) angleDiff += 360;
+
+  if (abs(angleDiff) > 3) {
+    // Continuer à tourner
+    if (angleDiff > 0) {
+      spinLeft(SPEED_SCAN);
     } else {
-      // Tourner vers le prochain angle
-      turning = true;
-      targetAngle = robotAngle + radians(SCAN_ANGLES[scanAngleIndex] - SCAN_ANGLES[scanAngleIndex - 1]);
+      spinRight(SPEED_SCAN);
     }
   } else {
-    // Tourner vers l'angle cible
-    float angleDiff = targetAngle - robotAngle;
+    // Angle atteint, prendre la mesure
+    stopMotors();
+    delay(100);  // Stabiliser
 
-    // Normaliser l'angle
-    while (angleDiff > PI) angleDiff -= 2 * PI;
-    while (angleDiff < -PI) angleDiff += 2 * PI;
+    // Mesurer la distance
+    float distance = measureDistance();
 
-    if (abs(angleDiff) < 0.1) {
-      stopMotors();
-      turning = false;
-      delay(200);
-    } else if (angleDiff > 0) {
-      spinLeft(SPEED_TURN);
+    scanDistances[currentScanIndex] = distance;
+    scanAngles[currentScanIndex] = radians(targetScanAngle);
+
+    // Afficher
+    Serial.print("  ");
+    Serial.print(targetScanAngle);
+    Serial.print("°: ");
+    if (distance > 0) {
+      Serial.print(distance);
+      Serial.println(" cm");
     } else {
-      spinRight(SPEED_TURN);
+      Serial.println("--");
+    }
+
+    // LED selon distance
+    if (distance > 0 && distance < 30) {
+      setLedColor(255, 0, 0);  // Rouge = proche
+    } else if (distance > 0 && distance < 80) {
+      setLedColor(255, 165, 0);  // Orange = moyen
+    } else {
+      setLedColor(0, 255, 0);  // Vert = loin
+    }
+
+    currentScanIndex++;
+
+    if (currentScanIndex >= NUM_SCAN_POINTS) {
+      // Scan complet
+      stopMotors();
+
+      // Revenir à l'angle initial
+      Serial.println("Scan terminé, retour à l'orientation initiale...");
+      currentState = STATE_PROCESSING_SCAN;
     }
   }
 }
 
-void decideNextMove() {
-  // Stratégie simple: avancer si possible, sinon tourner
-  float frontDistance = ultraSensor.distanceCm();
+float measureDistance() {
+  // Moyenne de 3 mesures pour plus de fiabilité
+  float sum = 0;
+  int validCount = 0;
 
-  if (frontDistance > 30) {
-    // Voie libre, avancer
-    Serial.println("Voie libre - Avancer");
-    currentState = STATE_MOVING;
-    setLedColor(0, 255, 0);
-  } else {
-    // Obstacle, tourner vers la direction la plus libre
-    Serial.println("Obstacle - Tourner");
-    currentState = STATE_TURNING;
-    setLedColor(255, 255, 0);
+  for (int i = 0; i < 3; i++) {
+    float d = ultraSensor.distanceCm();
+    if (d > MIN_DISTANCE && d < MAX_DISTANCE) {
+      sum += d;
+      validCount++;
+    }
+    delay(30);
+  }
+
+  if (validCount > 0) {
+    return sum / validCount;
+  }
+  return 0;  // Pas de mesure valide
+}
+
+void testScan360() {
+  Serial.println("\n=== TEST SCAN 360° ===");
+  setLedColor(255, 0, 255);
+
+  // Faire un tour complet en mesurant
+  gyroAngleOffset = gyro.getAngleZ();
+
+  for (int angle = 0; angle < 360; angle += 30) {
+    // Tourner vers l'angle
+    while (true) {
+      gyro.update();
+      float currentAngle = gyro.getAngleZ() - gyroAngleOffset;
+
+      float diff = angle - currentAngle;
+      while (diff > 180) diff -= 360;
+      while (diff < -180) diff += 360;
+
+      if (abs(diff) < 5) break;
+
+      if (diff > 0) {
+        spinLeft(SPEED_SCAN);
+      } else {
+        spinRight(SPEED_SCAN);
+      }
+      delay(20);
+    }
+
+    stopMotors();
+    delay(200);
+
+    float distance = measureDistance();
+    Serial.print(angle);
+    Serial.print("°: ");
+    Serial.print(distance);
+    Serial.println(" cm");
+  }
+
+  stopMotors();
+  setLedColor(0, 255, 0);
+  Serial.println("=== FIN TEST ===\n");
+}
+
+// ==================== TRAITEMENT DU SCAN ====================
+
+void processScanData() {
+  Serial.println("Traitement des données de scan...");
+
+  // Mettre à jour l'angle du robot depuis le gyroscope
+  gyro.update();
+  robotAngle = radians(gyro.getAngleZ() - gyroAngleOffset);
+
+  // Traiter chaque mesure
+  for (int i = 0; i < NUM_SCAN_POINTS; i++) {
+    float distance = scanDistances[i];
+    float angle = scanAngles[i] + robotAngle;
+
+    if (distance > MIN_DISTANCE && distance < MAX_DISTANCE) {
+      // Calculer la position de l'obstacle
+      float obsX = robotX + distance * cos(angle);
+      float obsY = robotY + distance * sin(angle);
+
+      // Marquer le chemin libre
+      markFreePath(robotX, robotY, obsX, obsY);
+
+      // Marquer l'obstacle
+      markPosition(obsX, obsY, CELL_OBSTACLE);
+    } else if (distance <= 0 || distance >= MAX_DISTANCE) {
+      // Pas d'obstacle détecté dans cette direction
+      // Marquer comme libre sur une distance limitée
+      float freeX = robotX + (MAX_DISTANCE * 0.8) * cos(angle);
+      float freeY = robotY + (MAX_DISTANCE * 0.8) * sin(angle);
+      markFreePath(robotX, robotY, freeX, freeY);
+    }
   }
 
   explorationStep++;
 
-  // Arrêter après un certain nombre d'étapes
-  if (explorationStep >= 20) {
+  // Décider du prochain mouvement
+  decideNextMove();
+}
+
+void decideNextMove() {
+  // Trouver la direction avec le plus d'espace
+  float bestDistance = 0;
+  int bestIndex = 0;
+
+  for (int i = 0; i < NUM_SCAN_POINTS; i++) {
+    if (scanDistances[i] > bestDistance) {
+      bestDistance = scanDistances[i];
+      bestIndex = i;
+    }
+  }
+
+  Serial.print("Meilleure direction: ");
+  Serial.print(bestIndex * SCAN_STEP);
+  Serial.print("° avec ");
+  Serial.print(bestDistance);
+  Serial.println(" cm");
+
+  if (bestDistance < 30 || explorationStep >= 15) {
+    // Pas assez d'espace ou exploration terminée
     currentState = STATE_FINISHED;
+  } else {
+    // Se tourner vers la meilleure direction et avancer
+    targetAngle = radians(bestIndex * SCAN_STEP);
+    currentState = STATE_MOVING;
+    setLedColor(0, 255, 0);
   }
 }
 
@@ -326,72 +526,133 @@ void decideNextMove() {
 void moveLoop() {
   static unsigned long moveStartTime = 0;
   static bool moving = false;
+  static bool turning = true;
 
-  if (!moving) {
-    moveStartTime = millis();
-    moving = true;
+  gyro.update();
+  float currentAngle = radians(gyro.getAngleZ() - gyroAngleOffset);
+
+  if (turning) {
+    // D'abord tourner vers la direction cible
+    float angleDiff = targetAngle - currentAngle;
+    while (angleDiff > PI) angleDiff -= 2 * PI;
+    while (angleDiff < -PI) angleDiff += 2 * PI;
+
+    if (abs(angleDiff) > 0.1) {
+      if (angleDiff > 0) {
+        spinLeft(SPEED_TURN);
+      } else {
+        spinRight(SPEED_TURN);
+      }
+    } else {
+      stopMotors();
+      delay(200);
+      turning = false;
+      moving = true;
+      moveStartTime = millis();
+    }
+  } else if (moving) {
+    // Vérifier les obstacles pendant le mouvement
+    float distance = ultraSensor.distanceCm();
+
+    if (distance > 0 && distance < 25) {
+      // Obstacle! Arrêter
+      stopMotors();
+      moving = false;
+      turning = true;
+      markRobotPosition();
+
+      Serial.println("Obstacle détecté pendant le mouvement!");
+      currentState = STATE_SCANNING_360;
+      startScan360();
+      return;
+    }
+
+    // Avancer
     moveForward(SPEED_MOVE);
-  }
 
-  // Vérifier les obstacles pendant le mouvement
-  float distance = ultraSensor.distanceCm();
+    // Avancer pendant un temps limité
+    if (millis() - moveStartTime > 1500) {
+      stopMotors();
+      moving = false;
+      turning = true;
+      markRobotPosition();
 
-  if (distance > 0 && distance < 20) {
-    // Obstacle proche, arrêter
-    stopMotors();
-    moving = false;
-    markRobotPosition();
-    currentState = STATE_SCANNING;
-    return;
-  }
+      delay(300);
 
-  // Avancer pendant un temps limité
-  if (millis() - moveStartTime > 1000) {
-    stopMotors();
-    moving = false;
-    markRobotPosition();
-    delay(300);
-    currentState = STATE_SCANNING;
+      // Nouveau scan
+      startScan360();
+    }
   }
 }
 
-void turnLoop() {
-  static unsigned long turnStartTime = 0;
-  static bool turningState = false;
-  static int turnDirection = 1;
+void avoidLoop() {
+  // Reculer puis tourner
+  static int avoidStep = 0;
 
-  if (!turningState) {
-    turnStartTime = millis();
-    turningState = true;
+  switch (avoidStep) {
+    case 0:
+      moveBackward(SPEED_MOVE);
+      delay(500);
+      stopMotors();
+      avoidStep = 1;
+      break;
 
-    // Choisir la direction de rotation (alterner)
-    turnDirection = (explorationStep % 2 == 0) ? 1 : -1;
-
-    if (turnDirection > 0) {
-      spinLeft(SPEED_TURN);
-    } else {
+    case 1:
       spinRight(SPEED_TURN);
+      delay(600);
+      stopMotors();
+      avoidStep = 0;
+      collisionDetected = false;
+      currentState = STATE_SCANNING_360;
+      startScan360();
+      break;
+  }
+}
+
+// ==================== DÉTECTION DE COLLISION ====================
+
+void checkCollision() {
+  if (currentState == STATE_IDLE || currentState == STATE_FINISHED) {
+    return;
+  }
+
+  gyro.update();
+
+  // Lire l'accéléromètre pour détecter les chocs
+  float accelX = gyro.getAngleX();  // Utilisation simplifiée
+  float accelY = gyro.getAngleY();
+
+  // Un changement brusque indique une collision
+  static float lastAccelX = 0;
+  static float lastAccelY = 0;
+
+  float deltaX = abs(accelX - lastAccelX);
+  float deltaY = abs(accelY - lastAccelY);
+
+  if (deltaX > COLLISION_THRESHOLD || deltaY > COLLISION_THRESHOLD) {
+    if (!collisionDetected) {
+      collisionDetected = true;
+      Serial.println("!!! COLLISION DÉTECTÉE !!!");
+      stopMotors();
+      buzzer.tone(2000, 100);
+      setLedColor(255, 0, 0);
+
+      currentState = STATE_AVOIDING;
     }
   }
 
-  // Tourner pendant un temps limité (~90 degrés)
-  if (millis() - turnStartTime > 800) {
-    stopMotors();
-    turningState = false;
-    delay(300);
-    currentState = STATE_SCANNING;
-  }
+  lastAccelX = accelX;
+  lastAccelY = accelY;
 }
 
 void finishedLoop() {
   static bool done = false;
 
   if (!done) {
-    Serial.println("\n*** CARTOGRAPHIE TERMINÉE ***\n");
+    Serial.println("\n*** EXPLORATION TERMINÉE ***");
     stopMotors();
     printMap();
 
-    // Animation de fin
     for (int i = 0; i < 3; i++) {
       setLedColor(0, 255, 0);
       buzzer.tone(1000 + i * 200, 150);
@@ -408,29 +669,28 @@ void finishedLoop() {
 // ==================== ODOMÉTRIE ====================
 
 void updateOdometry() {
-  // Calculer le déplacement depuis la dernière mise à jour
+  // Calculer le déplacement
   long deltaLeft = encoderLeft - lastEncoderLeft;
   long deltaRight = encoderRight - lastEncoderRight;
 
   lastEncoderLeft = encoderLeft;
   lastEncoderRight = encoderRight;
 
-  // Calculer la distance parcourue par chaque roue
   float distLeft = deltaLeft * CM_PER_PULSE;
   float distRight = deltaRight * CM_PER_PULSE;
-
-  // Calculer le déplacement du robot
   float distCenter = (distLeft + distRight) / 2.0;
-  float deltaAngle = (distRight - distLeft) / WHEEL_BASE;
+
+  // Utiliser le gyroscope pour l'angle (plus précis)
+  gyro.update();
+  robotAngle = radians(gyro.getAngleZ() - gyroAngleOffset);
 
   // Mettre à jour la position
-  robotX += distCenter * cos(robotAngle + deltaAngle / 2.0);
-  robotY += distCenter * sin(robotAngle + deltaAngle / 2.0);
-  robotAngle += deltaAngle;
+  robotX += distCenter * cos(robotAngle);
+  robotY += distCenter * sin(robotAngle);
+}
 
-  // Normaliser l'angle
-  while (robotAngle > PI) robotAngle -= 2 * PI;
-  while (robotAngle < -PI) robotAngle += 2 * PI;
+void markRobotPosition() {
+  markPosition(robotX, robotY, CELL_FREE);
 }
 
 // ==================== GESTION DE LA CARTE ====================
@@ -443,26 +703,20 @@ void initMap() {
   }
 }
 
-void markRobotPosition() {
-  int cellX = (int)(robotX / CELL_SIZE);
-  int cellY = (int)(robotY / CELL_SIZE);
-
-  if (cellX >= 0 && cellX < MAP_WIDTH && cellY >= 0 && cellY < MAP_HEIGHT) {
-    gridMap[cellY][cellX] = CELL_FREE;
-  }
-}
-
-void markObstacle(float x, float y) {
+void markPosition(float x, float y, uint8_t type) {
   int cellX = (int)(x / CELL_SIZE);
   int cellY = (int)(y / CELL_SIZE);
 
   if (cellX >= 0 && cellX < MAP_WIDTH && cellY >= 0 && cellY < MAP_HEIGHT) {
-    gridMap[cellY][cellX] = CELL_OBSTACLE;
+    // Ne pas écraser un obstacle par du libre
+    if (type == CELL_FREE && gridMap[cellY][cellX] == CELL_OBSTACLE) {
+      return;
+    }
+    gridMap[cellY][cellX] = type;
   }
 }
 
 void markFreePath(float x1, float y1, float x2, float y2) {
-  // Algorithme de Bresenham pour tracer une ligne
   int cellX1 = (int)(x1 / CELL_SIZE);
   int cellY1 = (int)(y1 / CELL_SIZE);
   int cellX2 = (int)(x2 / CELL_SIZE);
@@ -497,43 +751,49 @@ void markFreePath(float x1, float y1, float x2, float y2) {
 
 void printMap() {
   Serial.println("\n========== CARTE ==========");
-  Serial.print("Position robot: (");
-  Serial.print(robotX);
+  Serial.print("Position: (");
+  Serial.print(robotX, 1);
   Serial.print(", ");
-  Serial.print(robotY);
+  Serial.print(robotY, 1);
   Serial.print(") angle: ");
-  Serial.print(degrees(robotAngle));
+  Serial.print(degrees(robotAngle), 1);
   Serial.println("°");
+  Serial.print("Étapes d'exploration: ");
+  Serial.println(explorationStep);
   Serial.println();
 
-  // Position du robot sur la carte
   int robotCellX = (int)(robotX / CELL_SIZE);
   int robotCellY = (int)(robotY / CELL_SIZE);
 
-  // Afficher la carte (Y inversé pour affichage correct)
+  // Compter les cellules
+  int unknown = 0, free = 0, obstacle = 0;
+
   for (int y = MAP_HEIGHT - 1; y >= 0; y--) {
     for (int x = 0; x < MAP_WIDTH; x++) {
       if (x == robotCellX && y == robotCellY) {
-        // Afficher le robot avec sa direction
+        // Robot
         if (robotAngle > -PI/4 && robotAngle <= PI/4) {
-          Serial.print(">");  // Droite
+          Serial.print(">");
         } else if (robotAngle > PI/4 && robotAngle <= 3*PI/4) {
-          Serial.print("^");  // Haut
+          Serial.print("^");
         } else if (robotAngle > -3*PI/4 && robotAngle <= -PI/4) {
-          Serial.print("v");  // Bas
+          Serial.print("v");
         } else {
-          Serial.print("<");  // Gauche
+          Serial.print("<");
         }
       } else {
         switch (gridMap[y][x]) {
           case CELL_UNKNOWN:
             Serial.print(".");
+            unknown++;
             break;
           case CELL_FREE:
             Serial.print(" ");
+            free++;
             break;
           case CELL_OBSTACLE:
             Serial.print("#");
+            obstacle++;
             break;
         }
       }
@@ -542,8 +802,14 @@ void printMap() {
   }
 
   Serial.println("===========================");
+  Serial.print("Cellules: ");
+  Serial.print(free);
+  Serial.print(" libres, ");
+  Serial.print(obstacle);
+  Serial.print(" obstacles, ");
+  Serial.print(unknown);
+  Serial.println(" inconnues");
   Serial.println("Légende: . = inconnu, espace = libre, # = obstacle");
-  Serial.println("         > ^ v < = robot (direction)");
   Serial.println();
 }
 
@@ -574,7 +840,7 @@ void stopMotors() {
   motorRight.setMotorPwm(0);
 }
 
-// ==================== CONTRÔLE DES LEDs ====================
+// ==================== LEDs ====================
 
 void clearLeds() {
   rgbLed.setColor(0, 0, 0, 0);
@@ -594,9 +860,10 @@ void startupAnimation() {
   }
   delay(300);
   clearLeds();
+  setLedColor(0, 50, 0);
 }
 
-// ==================== INTERRUPTIONS ENCODEURS ====================
+// ==================== INTERRUPTIONS ====================
 
 void interruptLeft() {
   if (digitalRead(motorLeft.getPortB()) == 0) {
