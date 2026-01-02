@@ -1,6 +1,6 @@
 # mBot Ranger Pi Notifier
 
-Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications par email lors de détections d'événements.
+Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications par email et contrôler le robot via une interface web.
 
 ## Architecture
 
@@ -11,9 +11,9 @@ Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications
 └─────────────────┘                   └─────────────────┘                  └─────────────┘
        │                                      │
        ▼                                      ▼
-  Capteur ultrason                    Script pi_notifier.py
-  LEDs, Buzzer                        Envoi d'emails
-  Moteurs                             Contrôle à distance
+  Capteur ultrason                    pi_notifier.py (CLI)
+  LEDs, Buzzer                        web_controller.py (Web)
+  Moteurs                             Interface navigateur
 ```
 
 ## Fonctionnalités
@@ -29,6 +29,12 @@ Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications
 - Contrôler les LEDs
 - Déplacer le robot
 - Jouer des sons
+
+### Interface Web
+- Contrôle en temps réel via navigateur
+- Affichage des capteurs (distance, lumière)
+- Historique des alertes
+- Raccourcis clavier (flèches, ZQSD)
 
 ## Matériel requis
 
@@ -53,15 +59,18 @@ Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications
 ### 2. Côté Raspberry Pi
 
 ```bash
-# Installer les dépendances
+# Installer les dépendances (CLI uniquement)
 pip3 install pyserial
+
+# Installer les dépendances (avec interface web)
+pip3 install pyserial flask flask-socketio
 
 # Cloner le projet (ou copier les fichiers)
 cd /home/pi
 git clone <repo_url>
 cd mbot-ranger-pi-notifier
 
-# Créer la configuration
+# Créer la configuration (pour les emails)
 cp config.example.json config.json
 nano config.json  # Éditer avec vos paramètres
 ```
@@ -114,6 +123,32 @@ mBot> led_red    # LED rouge
 mBot> forward    # Avancer
 mBot> quit       # Quitter
 ```
+
+### Interface Web
+
+```bash
+# Démarrer le serveur web (accessible sur tout le réseau)
+python3 web_controller.py
+
+# Avec un port spécifique
+python3 web_controller.py --web-port 8080
+
+# Avec un port série spécifique
+python3 web_controller.py --port /dev/ttyACM0
+
+# Mode debug
+python3 web_controller.py --debug
+```
+
+Ouvrir dans un navigateur: `http://<ip-du-raspberry>:5000`
+
+**Fonctionnalités de l'interface web:**
+- Contrôle de mouvement (flèches directionnelles)
+- Contrôle des LEDs et sons
+- Affichage temps réel des capteurs
+- Activation/désactivation du monitoring
+- Historique des alertes
+- Raccourcis clavier: Flèches ou ZQSD + Espace (stop)
 
 ## Configuration
 
@@ -205,6 +240,8 @@ mBot> quit       # Quitter
 
 Pour démarrer automatiquement au boot:
 
+### Service CLI (notifications email)
+
 ```bash
 sudo nano /etc/systemd/system/mbot-notifier.service
 ```
@@ -226,10 +263,43 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
+### Service Web (interface navigateur)
+
 ```bash
+sudo nano /etc/systemd/system/mbot-web.service
+```
+
+```ini
+[Unit]
+Description=mBot Ranger Web Controller
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/mbot-ranger-pi-notifier
+ExecStart=/usr/bin/python3 web_controller.py --port /dev/ttyUSB0
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Activation des services
+
+```bash
+# Pour le service CLI
 sudo systemctl enable mbot-notifier
 sudo systemctl start mbot-notifier
+
+# Pour le service Web
+sudo systemctl enable mbot-web
+sudo systemctl start mbot-web
+
+# Vérifier le statut
 sudo systemctl status mbot-notifier
+sudo systemctl status mbot-web
 ```
 
 ## Dépannage
