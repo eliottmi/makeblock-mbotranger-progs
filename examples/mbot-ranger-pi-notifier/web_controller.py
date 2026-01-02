@@ -29,19 +29,15 @@ import logging
 import threading
 from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request, Response
+from flask_socketio import SocketIO, emit
 
-# Configuration
+# Configuration Flask
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'mbot-ranger-secret'
+app.config['SECRET_KEY'] = 'mbot-ranger-secret-key-2024'
 
-# Essayer d'importer SocketIO avec le bon backend
-try:
-    from flask_socketio import SocketIO, emit
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
-    SOCKETIO_AVAILABLE = True
-except ImportError:
-    SOCKETIO_AVAILABLE = False
-    socketio = None
+# SocketIO avec mode threading (compatible sans eventlet/gevent)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading',
+                    ping_timeout=10, ping_interval=5)
 
 # Variables globales
 serial_port = None
@@ -55,7 +51,7 @@ alert_history = []
 camera = None
 camera_streaming = False
 camera_lock = threading.Lock()
-camera_type = None  # 'picamera2', 'opencv', or None
+camera_type = None
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -70,6 +66,7 @@ HTML_PAGE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>mBot Ranger Controller</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.0/socket.io.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -98,8 +95,11 @@ HTML_PAGE = """
             width: 12px; height: 12px;
             border-radius: 50%;
             background: #ff4444;
+            transition: all 0.3s;
         }
         .status-dot.on { background: #44ff44; box-shadow: 0 0 10px #44ff44; }
+        .status-dot.pending { background: #ffaa44; animation: blink 0.5s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
         .panel {
             background: rgba(255,255,255,0.1);
             border-radius: 15px;
@@ -138,18 +138,21 @@ HTML_PAGE = """
             background: linear-gradient(145deg, #3a3a5c, #2a2a4c);
             border: none; border-radius: 10px;
             padding: 18px; color: #fff; font-size: 1.3em;
-            cursor: pointer; transition: all 0.2s;
+            cursor: pointer; transition: all 0.15s;
+            user-select: none;
         }
-        .btn:hover { transform: translateY(-2px); }
-        .btn:active { transform: translateY(0); }
+        .btn:hover { transform: translateY(-2px); background: linear-gradient(145deg, #4a4a6c, #3a3a5c); }
+        .btn:active { transform: translateY(0); background: linear-gradient(145deg, #2a2a4c, #1a1a3c); }
         .btn.stop { background: linear-gradient(145deg, #cc4444, #aa2222); }
         .btn-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
         .btn-small {
             background: linear-gradient(145deg, #3a5c3a, #2a4c2a);
             border: none; border-radius: 8px;
             padding: 10px 16px; color: #fff; font-size: 0.85em;
-            cursor: pointer;
+            cursor: pointer; transition: all 0.15s;
         }
+        .btn-small:hover { transform: translateY(-1px); }
+        .btn-small:active { transform: translateY(0); }
         .btn-small.red { background: linear-gradient(145deg, #cc4444, #aa2222); }
         .btn-small.green { background: linear-gradient(145deg, #44cc44, #22aa22); }
         .btn-small.blue { background: linear-gradient(145deg, #4444cc, #2222aa); }
@@ -162,22 +165,16 @@ HTML_PAGE = """
         }
         .sensor-value { font-size: 1.4em; font-weight: bold; color: #88ff88; }
         .sensor-label { font-size: 0.7em; color: #aaa; margin-top: 3px; }
-        .alerts-log {
-            max-height: 120px; overflow-y: auto;
-            background: rgba(0,0,0,0.2);
-            border-radius: 10px; padding: 10px;
-            font-size: 0.8em;
-        }
-        .alert-item { padding: 5px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-        .alert-item.obstacle { border-left: 3px solid #ff4444; padding-left: 8px; }
-        .alert-item.motion { border-left: 3px solid #ffaa44; padding-left: 8px; }
         .log-area {
             background: rgba(0,0,0,0.3);
             border-radius: 8px; padding: 10px;
-            max-height: 100px; overflow-y: auto;
+            height: 120px; overflow-y: auto;
             font-family: monospace; font-size: 0.75em;
             color: #aaa;
         }
+        .log-area .ok { color: #88ff88; }
+        .log-area .err { color: #ff8888; }
+        .log-area .warn { color: #ffaa44; }
     </style>
 </head>
 <body>
@@ -185,6 +182,10 @@ HTML_PAGE = """
         <h1>mBot Ranger Controller</h1>
 
         <div class="status-bar">
+            <div class="status-item">
+                <div class="status-dot" id="wsDot"></div>
+                <span id="wsStatus">WebSocket: --</span>
+            </div>
             <div class="status-item">
                 <div class="status-dot" id="robotDot"></div>
                 <span id="robotStatus">Robot: --</span>
@@ -218,13 +219,13 @@ HTML_PAGE = """
                     <h2>Controles</h2>
                     <div class="controls-grid">
                         <div></div>
-                        <button class="btn" onclick="cmd('forward')">^</button>
+                        <button class="btn" onmousedown="cmd('forward')" ontouchstart="cmd('forward')">^</button>
                         <div></div>
-                        <button class="btn" onclick="cmd('left')">&lt;</button>
-                        <button class="btn stop" onclick="cmd('stop')">X</button>
-                        <button class="btn" onclick="cmd('right')">&gt;</button>
+                        <button class="btn" onmousedown="cmd('left')" ontouchstart="cmd('left')">&lt;</button>
+                        <button class="btn stop" onmousedown="cmd('stop')" ontouchstart="cmd('stop')">X</button>
+                        <button class="btn" onmousedown="cmd('right')" ontouchstart="cmd('right')">&gt;</button>
                         <div></div>
-                        <button class="btn" onclick="cmd('backward')">v</button>
+                        <button class="btn" onmousedown="cmd('backward')" ontouchstart="cmd('backward')">v</button>
                         <div></div>
                     </div>
                 </div>
@@ -273,90 +274,142 @@ HTML_PAGE = """
 
                 <div class="panel">
                     <h2>Log</h2>
-                    <div class="log-area" id="logArea">En attente...</div>
+                    <div class="log-area" id="logArea"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        // Polling-based approach (plus fiable que WebSocket dans certains cas)
-        let pollInterval = null;
+        let socket = null;
+        let reconnectTimer = null;
+        let cameraActive = false;
 
-        function log(msg) {
+        function log(msg, type) {
             const area = document.getElementById('logArea');
             const time = new Date().toLocaleTimeString();
-            area.innerHTML = `[${time}] ${msg}<br>` + area.innerHTML;
-            if (area.children.length > 20) {
-                area.removeChild(area.lastChild);
+            const cls = type || '';
+            area.innerHTML = `<div class="${cls}">[${time}] ${msg}</div>` + area.innerHTML;
+            while (area.children.length > 50) area.removeChild(area.lastChild);
+        }
+
+        function updateWsStatus(status) {
+            const dot = document.getElementById('wsDot');
+            const text = document.getElementById('wsStatus');
+            dot.className = 'status-dot';
+            if (status === 'connected') {
+                dot.classList.add('on');
+                text.textContent = 'WebSocket: OK';
+            } else if (status === 'connecting') {
+                dot.classList.add('pending');
+                text.textContent = 'WebSocket: ...';
+            } else {
+                text.textContent = 'WebSocket: OFF';
             }
         }
 
-        function cmd(command) {
-            log('Envoi: ' + command);
-            fetch('/api/command', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({command: command})
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    log('OK: ' + command);
-                } else {
-                    log('Erreur: ' + (data.error || 'echec'));
-                }
-            })
-            .catch(e => log('Erreur reseau: ' + e));
-        }
+        function connectWebSocket() {
+            if (socket && socket.connected) return;
 
-        function updateStatus() {
-            fetch('/api/status')
-            .then(r => r.json())
-            .then(data => {
-                // Robot
+            updateWsStatus('connecting');
+            log('Connexion WebSocket...', 'warn');
+
+            socket = io({
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000,
+                timeout: 10000
+            });
+
+            socket.on('connect', function() {
+                updateWsStatus('connected');
+                log('WebSocket connecte', 'ok');
+                socket.emit('get_status');
+            });
+
+            socket.on('disconnect', function() {
+                updateWsStatus('disconnected');
+                log('WebSocket deconnecte', 'err');
+            });
+
+            socket.on('connect_error', function(err) {
+                updateWsStatus('disconnected');
+                log('Erreur connexion: ' + err.message, 'err');
+            });
+
+            socket.on('status', function(data) {
+                // Robot status
                 const robotDot = document.getElementById('robotDot');
-                const robotStatus = document.getElementById('robotStatus');
+                const robotText = document.getElementById('robotStatus');
                 if (data.robot_connected) {
                     robotDot.classList.add('on');
-                    robotStatus.textContent = 'Robot: OK';
+                    robotText.textContent = 'Robot: OK';
                 } else {
                     robotDot.classList.remove('on');
-                    robotStatus.textContent = 'Robot: Deconnecte';
+                    robotText.textContent = 'Robot: OFF';
                 }
 
-                // Camera
-                const cameraDot = document.getElementById('cameraDot');
-                const cameraStatus = document.getElementById('cameraStatus');
+                // Camera status
+                const camDot = document.getElementById('cameraDot');
+                const camText = document.getElementById('cameraStatus');
                 if (data.camera_streaming) {
-                    cameraDot.classList.add('on');
-                    cameraStatus.textContent = 'Camera: ON';
+                    camDot.classList.add('on');
+                    camText.textContent = 'Camera: ON';
+                    if (!cameraActive) showCameraFeed();
                 } else if (data.camera_available) {
-                    cameraDot.classList.remove('on');
-                    cameraStatus.textContent = 'Camera: OFF';
+                    camDot.classList.remove('on');
+                    camText.textContent = 'Camera: OFF';
                 } else {
-                    cameraDot.classList.remove('on');
-                    cameraStatus.textContent = 'Camera: N/A';
+                    camDot.classList.remove('on');
+                    camText.textContent = 'Camera: N/A';
                 }
 
                 // Sensors
-                if (data.last_status) {
-                    const s = data.last_status;
-                    if (s.distance !== undefined) {
+                if (data.sensors) {
+                    const s = data.sensors;
+                    if (s.distance !== undefined)
                         document.getElementById('distanceValue').textContent = s.distance.toFixed(1);
-                    }
-                    if (s.light !== undefined) {
+                    if (s.light !== undefined)
                         document.getElementById('lightValue').textContent = s.light;
-                    }
-                    if (s.baseline !== undefined) {
+                    if (s.baseline !== undefined)
                         document.getElementById('baselineValue').textContent = s.baseline.toFixed(1);
-                    }
-                    if (s.uptime !== undefined) {
+                    if (s.uptime !== undefined)
                         document.getElementById('uptime').textContent = 'Uptime: ' + s.uptime + 's';
-                    }
                 }
-            })
-            .catch(e => {});
+            });
+
+            socket.on('cmd_result', function(data) {
+                if (data.success) {
+                    log('OK: ' + data.command, 'ok');
+                } else {
+                    log('Erreur: ' + data.command, 'err');
+                }
+            });
+
+            socket.on('alert', function(data) {
+                log('ALERTE: ' + data.alert + ' - ' + data.message, 'warn');
+            });
+
+            socket.on('robot_message', function(data) {
+                log('Robot: ' + (data.message || JSON.stringify(data)));
+            });
+        }
+
+        function cmd(command) {
+            if (socket && socket.connected) {
+                socket.emit('command', {command: command});
+                log('> ' + command);
+            } else {
+                // Fallback HTTP
+                fetch('/api/command', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({command: command})
+                }).then(r => r.json()).then(data => {
+                    log((data.success ? 'OK' : 'ERR') + ': ' + command, data.success ? 'ok' : 'err');
+                }).catch(e => log('Erreur: ' + e, 'err'));
+            }
         }
 
         function startCamera() {
@@ -365,17 +418,15 @@ HTML_PAGE = """
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    log('Camera demarree');
+                    log('Camera demarree', 'ok');
                     showCameraFeed();
                 } else {
-                    log('Erreur camera: ' + (data.error || 'echec'));
+                    log('Erreur camera: ' + (data.error || '?'), 'err');
                 }
-            })
-            .catch(e => log('Erreur: ' + e));
+            }).catch(e => log('Erreur: ' + e, 'err'));
         }
 
         function stopCamera() {
-            log('Arret camera...');
             fetch('/api/camera/stop', {method: 'POST'})
             .then(r => r.json())
             .then(data => {
@@ -385,6 +436,7 @@ HTML_PAGE = """
         }
 
         function showCameraFeed() {
+            cameraActive = true;
             document.getElementById('cameraPlaceholder').style.display = 'none';
             const feed = document.getElementById('cameraFeed');
             feed.src = '/video_feed?' + Date.now();
@@ -393,6 +445,7 @@ HTML_PAGE = """
         }
 
         function hideCameraFeed() {
+            cameraActive = false;
             document.getElementById('cameraPlaceholder').style.display = 'flex';
             document.getElementById('cameraFeed').style.display = 'none';
             document.getElementById('cameraOverlay').style.display = 'none';
@@ -404,6 +457,7 @@ HTML_PAGE = """
 
         // Raccourcis clavier
         document.addEventListener('keydown', function(e) {
+            if (e.repeat) return;
             switch(e.key) {
                 case 'ArrowUp': case 'z': case 'w': cmd('forward'); break;
                 case 'ArrowDown': case 's': cmd('backward'); break;
@@ -413,10 +467,9 @@ HTML_PAGE = """
             }
         });
 
-        // Demarrer le polling
-        updateStatus();
-        pollInterval = setInterval(updateStatus, 2000);
+        // Demarrage
         log('Interface prete');
+        connectWebSocket();
     </script>
 </body>
 </html>
@@ -523,7 +576,7 @@ def generate_frames():
         if frame:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-        time.sleep(0.05)  # ~20 FPS
+        time.sleep(0.04)  # ~25 FPS
 
 # ==================== SERIAL COMMUNICATION ====================
 
@@ -565,37 +618,55 @@ def send_serial_command(command):
                 logger.error(f"Erreur envoi: {e}")
     return False
 
-def read_serial_messages():
-    """Lit les messages du robot"""
-    global serial_port, last_status, monitoring
-    with serial_lock:
-        if serial_port and serial_port.is_open:
-            try:
-                while serial_port.in_waiting:
-                    line = serial_port.readline().decode('utf-8').strip()
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            msg_type = data.get("type", "")
-                            if msg_type == "status":
-                                last_status = data
-                                monitoring = data.get("monitoring", False)
-                            elif msg_type == "alert":
-                                alert_history.insert(0, data)
-                                if len(alert_history) > 50:
-                                    alert_history.pop()
-                            logger.debug(f"Recu: {data}")
-                        except json.JSONDecodeError:
-                            logger.debug(f"Message non-JSON: {line}")
-            except Exception as e:
-                logger.error(f"Erreur lecture: {e}")
-
 def serial_reader_thread():
-    """Thread de lecture série"""
+    """Thread de lecture série - envoie les données via WebSocket"""
+    global last_status, monitoring
     while True:
-        if robot_connected:
-            read_serial_messages()
-        time.sleep(0.1)
+        if robot_connected and serial_port and serial_port.is_open:
+            with serial_lock:
+                try:
+                    while serial_port.in_waiting:
+                        line = serial_port.readline().decode('utf-8').strip()
+                        if line:
+                            try:
+                                data = json.loads(line)
+                                msg_type = data.get("type", "")
+
+                                if msg_type == "status":
+                                    last_status = data
+                                    monitoring = data.get("monitoring", False)
+                                    # Envoyer via WebSocket
+                                    socketio.emit('status', {
+                                        'robot_connected': robot_connected,
+                                        'camera_available': camera is not None,
+                                        'camera_streaming': camera_streaming,
+                                        'sensors': data
+                                    })
+                                elif msg_type == "alert":
+                                    alert_history.insert(0, data)
+                                    if len(alert_history) > 50:
+                                        alert_history.pop()
+                                    socketio.emit('alert', data)
+                                elif msg_type in ["ack", "ready", "startup", "pong"]:
+                                    socketio.emit('robot_message', data)
+
+                                logger.debug(f"Recu: {data}")
+                            except json.JSONDecodeError:
+                                logger.debug(f"Message non-JSON: {line}")
+                except Exception as e:
+                    logger.error(f"Erreur lecture: {e}")
+        time.sleep(0.05)
+
+def status_broadcast_thread():
+    """Thread qui envoie périodiquement le status"""
+    while True:
+        socketio.emit('status', {
+            'robot_connected': robot_connected,
+            'camera_available': camera is not None,
+            'camera_streaming': camera_streaming,
+            'sensors': last_status
+        })
+        time.sleep(2)
 
 # ==================== ROUTES FLASK ====================
 
@@ -617,28 +688,13 @@ def api_status():
 
 @app.route('/api/command', methods=['POST'])
 def api_command():
-    """API: Envoyer une commande"""
+    """API: Envoyer une commande (fallback HTTP)"""
     data = request.json or {}
     cmd = data.get('command', '')
     if cmd:
         success = send_serial_command(cmd)
         return jsonify({"success": success, "command": cmd})
     return jsonify({"success": False, "error": "No command"})
-
-@app.route('/api/alerts')
-def api_alerts():
-    """API: Historique des alertes"""
-    return jsonify(alert_history[:50])
-
-# Camera API
-@app.route('/api/camera/status')
-def api_camera_status():
-    """API: Status caméra"""
-    return jsonify({
-        "available": camera is not None,
-        "streaming": camera_streaming,
-        "type": camera_type
-    })
 
 @app.route('/api/camera/start', methods=['POST'])
 def api_camera_start():
@@ -666,14 +722,49 @@ def video_feed():
 def snapshot():
     """Capture une image"""
     if not camera_streaming:
-        # Démarrer temporairement pour la capture
         start_camera_stream()
-        time.sleep(0.5)
+        time.sleep(0.3)
     frame = get_camera_frame()
     if frame:
         return Response(frame, mimetype='image/jpeg',
                        headers={'Content-Disposition': 'inline; filename=snapshot.jpg'})
     return "Camera not available", 503
+
+# ==================== WEBSOCKET HANDLERS ====================
+
+@socketio.on('connect')
+def handle_connect():
+    """Client WebSocket connecté"""
+    logger.info("Client WebSocket connecte")
+    emit('status', {
+        'robot_connected': robot_connected,
+        'camera_available': camera is not None,
+        'camera_streaming': camera_streaming,
+        'sensors': last_status
+    })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Client WebSocket déconnecté"""
+    logger.info("Client WebSocket deconnecte")
+
+@socketio.on('command')
+def handle_command(data):
+    """Réception d'une commande via WebSocket"""
+    cmd = data.get('command', '')
+    if cmd:
+        success = send_serial_command(cmd)
+        emit('cmd_result', {'success': success, 'command': cmd})
+
+@socketio.on('get_status')
+def handle_get_status():
+    """Demande de status"""
+    emit('status', {
+        'robot_connected': robot_connected,
+        'camera_available': camera is not None,
+        'camera_streaming': camera_streaming,
+        'sensors': last_status
+    })
 
 # ==================== MAIN ====================
 
@@ -704,18 +795,21 @@ def main():
         init_camera()
 
     # Thread de lecture série
-    reader = threading.Thread(target=serial_reader_thread, daemon=True)
-    reader.start()
+    serial_thread = threading.Thread(target=serial_reader_thread, daemon=True)
+    serial_thread.start()
 
-    # Démarrer le serveur
+    # Thread de broadcast status
+    broadcast_thread = threading.Thread(target=status_broadcast_thread, daemon=True)
+    broadcast_thread.start()
+
+    # Démarrer le serveur avec SocketIO
     logger.info(f"Serveur web: http://{args.host}:{args.web_port}")
     if camera:
         logger.info(f"Camera: {camera_type}")
 
     try:
-        # Utiliser le serveur Flask simple (plus fiable)
-        app.run(host=args.host, port=args.web_port,
-                debug=args.debug, threaded=True, use_reloader=False)
+        socketio.run(app, host=args.host, port=args.web_port,
+                    debug=args.debug, use_reloader=False, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         pass
     finally:
