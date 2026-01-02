@@ -35,6 +35,8 @@ Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications
 - Affichage des capteurs (distance, lumière)
 - Historique des alertes
 - Raccourcis clavier (flèches, ZQSD)
+- **Streaming vidéo live** de la caméra Pi
+- Capture de snapshots
 
 ## Matériel requis
 
@@ -47,6 +49,7 @@ Interface entre le mBot Ranger et un Raspberry Pi pour envoyer des notifications
 - Raspberry Pi (tout modèle avec USB)
 - Connexion Internet (WiFi ou Ethernet)
 - Python 3.x
+- **Optionnel**: Caméra Pi ou webcam USB
 
 ## Installation
 
@@ -64,6 +67,12 @@ pip3 install pyserial
 
 # Installer les dépendances (avec interface web)
 pip3 install pyserial flask flask-socketio
+
+# Installer les dépendances caméra (optionnel)
+# Pour Pi Camera (recommandé sur Raspberry Pi):
+pip3 install picamera2 opencv-python
+# Pour webcam USB uniquement:
+pip3 install opencv-python
 
 # Cloner le projet (ou copier les fichiers)
 cd /home/pi
@@ -143,12 +152,24 @@ python3 web_controller.py --debug
 Ouvrir dans un navigateur: `http://<ip-du-raspberry>:5000`
 
 **Fonctionnalités de l'interface web:**
+- **Streaming vidéo live** de la caméra Pi/USB
 - Contrôle de mouvement (flèches directionnelles)
 - Contrôle des LEDs et sons
 - Affichage temps réel des capteurs
 - Activation/désactivation du monitoring
 - Historique des alertes
+- Capture de snapshots
 - Raccourcis clavier: Flèches ou ZQSD + Espace (stop)
+
+**Options caméra:**
+```bash
+# Désactiver la caméra
+python3 web_controller.py --no-camera
+
+# La caméra détecte automatiquement:
+# 1. Pi Camera (via picamera2)
+# 2. Webcam USB (via OpenCV)
+```
 
 ## Configuration
 
