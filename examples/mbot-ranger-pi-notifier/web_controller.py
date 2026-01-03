@@ -52,6 +52,7 @@ camera = None
 camera_streaming = False
 camera_lock = threading.Lock()
 camera_type = None
+camera_rotation = 270  # Rotation en degrés (0, 90, 180, 270) - 270 = rotation gauche
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -212,6 +213,13 @@ HTML_PAGE = """
                         <button class="btn-small green" onclick="startCamera()">Demarrer</button>
                         <button class="btn-small red" onclick="stopCamera()">Arreter</button>
                         <button class="btn-small purple" onclick="snapshot()">Photo</button>
+                    </div>
+                    <div class="camera-controls" style="margin-top: 8px;">
+                        <span style="color: #888; font-size: 0.8em;">Rotation:</span>
+                        <button class="btn-small" onclick="rotateCamera(0)">0°</button>
+                        <button class="btn-small" onclick="rotateCamera(90)">90°</button>
+                        <button class="btn-small" onclick="rotateCamera(180)">180°</button>
+                        <button class="btn-small" onclick="rotateCamera(270)">270°</button>
                     </div>
                 </div>
 
@@ -455,6 +463,25 @@ HTML_PAGE = """
             window.open('/snapshot?' + Date.now(), '_blank');
         }
 
+        function rotateCamera(degrees) {
+            fetch('/api/camera/rotate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({rotation: degrees})
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    log('Rotation camera: ' + degrees + '°', 'ok');
+                    // Rafraichir le flux
+                    if (cameraActive) {
+                        const feed = document.getElementById('cameraFeed');
+                        feed.src = '/video_feed?' + Date.now();
+                    }
+                } else {
+                    log('Erreur rotation: ' + (data.error || '?'), 'err');
+                }
+            }).catch(e => log('Erreur: ' + e, 'err'));
+        }
+
         // Raccourcis clavier
         document.addEventListener('keydown', function(e) {
             if (e.repeat) return;
@@ -547,24 +574,41 @@ def stop_camera_stream():
         camera_streaming = False
         logger.info("Camera streaming arrete")
 
+def rotate_frame(frame, rotation):
+    """Applique une rotation à la frame"""
+    import cv2
+    if rotation == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif rotation == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    elif rotation == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
 def get_camera_frame():
     """Capture une frame de la caméra"""
+    global camera_rotation
     with camera_lock:
         if not camera_streaming or camera is None:
             return None
         try:
+            import cv2
             if camera_type == 'picamera2':
-                import cv2
                 frame = camera.capture_array()
-                _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
-                                       [cv2.IMWRITE_JPEG_QUALITY, 70])
-                return jpeg.tobytes()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             elif camera_type == 'opencv':
-                import cv2
                 ret, frame = camera.read()
-                if ret:
-                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    return jpeg.tobytes()
+                if not ret:
+                    return None
+            else:
+                return None
+
+            # Appliquer la rotation
+            if camera_rotation != 0:
+                frame = rotate_frame(frame, camera_rotation)
+
+            _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            return jpeg.tobytes()
         except Exception as e:
             logger.error(f"Erreur capture: {e}")
     return None
@@ -710,6 +754,23 @@ def api_camera_stop():
     stop_camera_stream()
     return jsonify({"success": True})
 
+@app.route('/api/camera/rotate', methods=['POST'])
+def api_camera_rotate():
+    """API: Changer la rotation de la caméra"""
+    global camera_rotation
+    data = request.json or {}
+    rotation = data.get('rotation')
+    if rotation is not None and rotation in [0, 90, 180, 270]:
+        camera_rotation = rotation
+        logger.info(f"Camera rotation: {rotation}°")
+        return jsonify({"success": True, "rotation": camera_rotation})
+    return jsonify({"success": False, "error": "Invalid rotation (0, 90, 180, 270)"})
+
+@app.route('/api/camera/rotation', methods=['GET'])
+def api_camera_rotation():
+    """API: Obtenir la rotation actuelle"""
+    return jsonify({"rotation": camera_rotation})
+
 @app.route('/video_feed')
 def video_feed():
     """Streaming vidéo MJPEG"""
@@ -778,6 +839,9 @@ def main():
                        help='Adresse ecoute (defaut: 0.0.0.0)')
     parser.add_argument('--no-camera', action='store_true',
                        help='Desactiver la camera')
+    parser.add_argument('--camera-rotation', '-r', type=int, default=270,
+                       choices=[0, 90, 180, 270],
+                       help='Rotation camera en degres (defaut: 270 = gauche)')
     parser.add_argument('--debug', '-d', action='store_true',
                        help='Mode debug')
 
@@ -785,6 +849,10 @@ def main():
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    # Configuration camera rotation
+    global camera_rotation
+    camera_rotation = args.camera_rotation
 
     # Connexion série
     if not connect_serial(args.port):
@@ -805,7 +873,7 @@ def main():
     # Démarrer le serveur avec SocketIO
     logger.info(f"Serveur web: http://{args.host}:{args.web_port}")
     if camera:
-        logger.info(f"Camera: {camera_type}")
+        logger.info(f"Camera: {camera_type}, rotation: {camera_rotation}°")
 
     try:
         socketio.run(app, host=args.host, port=args.web_port,
