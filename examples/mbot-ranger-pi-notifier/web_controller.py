@@ -58,6 +58,9 @@ camera_rotation = 270  # Rotation en degrés (0, 90, 180, 270) - 270 = rotation 
 person_detection_enabled = False
 person_detected = False
 person_detection_cooldown = 5  # Secondes entre alertes
+person_detection_sensitivity = 0.5  # 0.0 (très sensible) à 1.0 (peu sensible)
+person_alarm_enabled = True  # Jouer l'alarme sur le robot
+person_led_enabled = True  # Allumer LED rouge
 last_person_alert = 0
 hog_detector = None
 
@@ -266,6 +269,10 @@ HTML_PAGE = """
             color: #888;
         }
         .joystick-info span { color: #88ccff; }
+        .detection-controls { display: flex; flex-direction: column; gap: 5px; }
+        .detection-row { display: flex; align-items: center; gap: 10px; }
+        .detection-row label { display: flex; align-items: center; cursor: pointer; }
+        .detection-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
         .sensor-display { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
         .sensor-card {
             background: rgba(0,0,0,0.2);
@@ -332,10 +339,36 @@ HTML_PAGE = """
                         <button class="btn-small" onclick="rotateCamera(180)">180°</button>
                         <button class="btn-small" onclick="rotateCamera(270)">270°</button>
                     </div>
-                    <div class="camera-controls" style="margin-top: 8px;">
-                        <span style="color: #888; font-size: 0.8em;">Detection personne:</span>
-                        <button class="btn-small green" id="btnDetectOn" onclick="toggleDetection(true)">Activer</button>
-                        <button class="btn-small red" id="btnDetectOff" onclick="toggleDetection(false)">Desactiver</button>
+                </div>
+
+                <div class="panel">
+                    <h2>Detection Personne</h2>
+                    <div class="detection-controls">
+                        <div class="detection-row">
+                            <button class="btn-small green" id="btnDetectOn" onclick="toggleDetection(true)">Activer</button>
+                            <button class="btn-small red" id="btnDetectOff" onclick="toggleDetection(false)">Desactiver</button>
+                            <span id="detectStatus" style="margin-left: 10px; color: #888;">Inactive</span>
+                        </div>
+                        <div class="detection-row" style="margin-top: 10px;">
+                            <label style="color: #888; font-size: 0.85em; min-width: 80px;">Sensibilite:</label>
+                            <input type="range" class="speed-slider" id="sensitivitySlider" min="0" max="100" value="50" style="flex:1;">
+                            <span id="sensitivityValue" style="color: #88ff88; min-width: 40px; text-align: right;">50%</span>
+                        </div>
+                        <div class="detection-row" style="margin-top: 8px;">
+                            <label style="color: #888; font-size: 0.85em; min-width: 80px;">Cooldown:</label>
+                            <input type="range" class="speed-slider" id="cooldownSlider" min="1" max="30" value="5" style="flex:1;">
+                            <span id="cooldownValue" style="color: #88ff88; min-width: 40px; text-align: right;">5s</span>
+                        </div>
+                        <div class="detection-row" style="margin-top: 10px;">
+                            <label style="color: #888; font-size: 0.85em;">
+                                <input type="checkbox" id="alarmEnabled" checked style="margin-right: 5px;">
+                                Alarme sonore
+                            </label>
+                            <label style="color: #888; font-size: 0.85em; margin-left: 15px;">
+                                <input type="checkbox" id="ledEnabled" checked style="margin-right: 5px;">
+                                LED rouge
+                            </label>
+                        </div>
                     </div>
                 </div>
 
@@ -639,10 +672,68 @@ HTML_PAGE = """
             .then(data => {
                 if (data.success) {
                     log('Detection ' + (enable ? 'activee' : 'desactivee'), 'ok');
+                    document.getElementById('detectStatus').textContent = enable ? 'Active' : 'Inactive';
+                    document.getElementById('detectStatus').style.color = enable ? '#88ff88' : '#888';
                 } else {
                     log('Erreur detection: ' + (data.error || '?'), 'err');
                 }
             }).catch(e => log('Erreur: ' + e, 'err'));
+        }
+
+        function updateDetectionSettings() {
+            const sensitivity = parseInt(document.getElementById('sensitivitySlider').value);
+            const cooldown = parseInt(document.getElementById('cooldownSlider').value);
+            const alarmEnabled = document.getElementById('alarmEnabled').checked;
+            const ledEnabled = document.getElementById('ledEnabled').checked;
+
+            fetch('/api/detection/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    sensitivity: sensitivity,
+                    cooldown: cooldown,
+                    alarm_enabled: alarmEnabled,
+                    led_enabled: ledEnabled
+                })
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    log('Reglages detection mis a jour', 'ok');
+                }
+            }).catch(e => log('Erreur: ' + e, 'err'));
+        }
+
+        function initDetectionControls() {
+            const sensitivitySlider = document.getElementById('sensitivitySlider');
+            const sensitivityValue = document.getElementById('sensitivityValue');
+            const cooldownSlider = document.getElementById('cooldownSlider');
+            const cooldownValue = document.getElementById('cooldownValue');
+            const alarmEnabled = document.getElementById('alarmEnabled');
+            const ledEnabled = document.getElementById('ledEnabled');
+
+            sensitivitySlider.addEventListener('input', function() {
+                sensitivityValue.textContent = this.value + '%';
+            });
+            sensitivitySlider.addEventListener('change', updateDetectionSettings);
+
+            cooldownSlider.addEventListener('input', function() {
+                cooldownValue.textContent = this.value + 's';
+            });
+            cooldownSlider.addEventListener('change', updateDetectionSettings);
+
+            alarmEnabled.addEventListener('change', updateDetectionSettings);
+            ledEnabled.addEventListener('change', updateDetectionSettings);
+
+            // Charger les reglages actuels
+            fetch('/api/detection/settings')
+            .then(r => r.json())
+            .then(data => {
+                sensitivitySlider.value = data.sensitivity;
+                sensitivityValue.textContent = data.sensitivity + '%';
+                cooldownSlider.value = data.cooldown;
+                cooldownValue.textContent = data.cooldown + 's';
+                alarmEnabled.checked = data.alarm_enabled;
+                ledEnabled.checked = data.led_enabled;
+            }).catch(e => console.log('Erreur chargement reglages:', e));
         }
 
         // ==================== JOYSTICK ====================
@@ -858,6 +949,7 @@ HTML_PAGE = """
         log('Interface prete');
         connectWebSocket();
         initJoystick();
+        initDetectionControls();
     </script>
 </body>
 </html>
@@ -1031,13 +1123,17 @@ def detect_person_in_frame():
         scale = 0.6
         small_frame = cv2.resize(frame, None, fx=scale, fy=scale)
 
+        # Calculer le seuil basé sur la sensibilité (0.0 = très sensible, 1.0 = peu sensible)
+        # hitThreshold: 0 = très sensible, 0.5 = moyen, 1.0+ = peu sensible
+        hit_threshold = person_detection_sensitivity * 0.8
+
         # Détection HOG avec paramètres optimisés
         boxes, weights = hog_detector.detectMultiScale(
             small_frame,
             winStride=(4, 4),      # Plus petit = plus précis mais plus lent
             padding=(8, 8),        # Plus de padding = meilleure détection aux bords
             scale=1.02,            # Plus petit = plus de niveaux de détection
-            hitThreshold=0         # Seuil bas = plus sensible
+            hitThreshold=hit_threshold  # Basé sur la sensibilité configurée
         )
 
         # Log pour debug
@@ -1074,7 +1170,7 @@ def person_detection_thread():
                 # Déclencher l'alarme avec cooldown
                 if current_time - last_person_alert > person_detection_cooldown:
                     last_person_alert = current_time
-                    logger.warning("!!! PERSONNE DETECTEE - Declenchement alarme !!!")
+                    logger.warning("!!! PERSONNE DETECTEE !!!")
 
                     # Envoyer alerte WebSocket
                     socketio.emit('alert', {
@@ -1083,9 +1179,15 @@ def person_detection_thread():
                         'message': 'Personne detectee par la camera!'
                     })
 
-                    # Déclencher l'alarme sur le robot
-                    send_serial_command('alarm')
-                    send_serial_command('led_red')
+                    # Déclencher l'alarme sur le robot (si activée)
+                    if person_alarm_enabled:
+                        send_serial_command('alarm')
+                        logger.info("Alarme sonore declenchee")
+
+                    # Allumer LED rouge (si activée)
+                    if person_led_enabled:
+                        send_serial_command('led_red')
+                        logger.info("LED rouge allumee")
             else:
                 person_detected = False
 
@@ -1290,6 +1392,37 @@ def api_detection_status():
         "enabled": person_detection_enabled,
         "detected": person_detected,
         "detector_ready": hog_detector is not None
+    })
+
+@app.route('/api/detection/settings', methods=['GET', 'POST'])
+def api_detection_settings():
+    """API: Obtenir ou modifier les réglages de détection"""
+    global person_detection_sensitivity, person_detection_cooldown
+    global person_alarm_enabled, person_led_enabled
+
+    if request.method == 'POST':
+        data = request.json or {}
+        if 'sensitivity' in data:
+            # Convertir 0-100 en 0.0-1.0 (inversé: 100% = très sensible = seuil bas)
+            person_detection_sensitivity = 1.0 - (data['sensitivity'] / 100.0)
+            logger.info(f"Sensibilite detection: {data['sensitivity']}% (threshold={person_detection_sensitivity:.2f})")
+        if 'cooldown' in data:
+            person_detection_cooldown = max(1, min(30, data['cooldown']))
+            logger.info(f"Cooldown detection: {person_detection_cooldown}s")
+        if 'alarm_enabled' in data:
+            person_alarm_enabled = bool(data['alarm_enabled'])
+            logger.info(f"Alarme detection: {'ON' if person_alarm_enabled else 'OFF'}")
+        if 'led_enabled' in data:
+            person_led_enabled = bool(data['led_enabled'])
+            logger.info(f"LED detection: {'ON' if person_led_enabled else 'OFF'}")
+        return jsonify({"success": True})
+
+    # GET - retourner les réglages actuels
+    return jsonify({
+        "sensitivity": int((1.0 - person_detection_sensitivity) * 100),
+        "cooldown": person_detection_cooldown,
+        "alarm_enabled": person_alarm_enabled,
+        "led_enabled": person_led_enabled
     })
 
 @app.route('/video_feed')
