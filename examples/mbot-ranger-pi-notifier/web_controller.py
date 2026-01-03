@@ -54,6 +54,13 @@ camera_lock = threading.Lock()
 camera_type = None
 camera_rotation = 270  # Rotation en degrés (0, 90, 180, 270) - 270 = rotation gauche
 
+# Person detection
+person_detection_enabled = False
+person_detected = False
+person_detection_cooldown = 5  # Secondes entre alertes
+last_person_alert = 0
+hog_detector = None
+
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -196,6 +203,10 @@ HTML_PAGE = """
                 <span id="cameraStatus">Camera: --</span>
             </div>
             <div class="status-item">
+                <div class="status-dot" id="detectionDot"></div>
+                <span id="detectionStatus">Detection: --</span>
+            </div>
+            <div class="status-item">
                 <span id="uptime">Uptime: --</span>
             </div>
         </div>
@@ -220,6 +231,11 @@ HTML_PAGE = """
                         <button class="btn-small" onclick="rotateCamera(90)">90°</button>
                         <button class="btn-small" onclick="rotateCamera(180)">180°</button>
                         <button class="btn-small" onclick="rotateCamera(270)">270°</button>
+                    </div>
+                    <div class="camera-controls" style="margin-top: 8px;">
+                        <span style="color: #888; font-size: 0.8em;">Detection personne:</span>
+                        <button class="btn-small green" id="btnDetectOn" onclick="toggleDetection(true)">Activer</button>
+                        <button class="btn-small red" id="btnDetectOff" onclick="toggleDetection(false)">Desactiver</button>
                     </div>
                 </div>
 
@@ -373,6 +389,29 @@ HTML_PAGE = """
                     camText.textContent = 'Camera: N/A';
                 }
 
+                // Detection status
+                const detectDot = document.getElementById('detectionDot');
+                const detectText = document.getElementById('detectionStatus');
+                if (data.person_detected) {
+                    detectDot.classList.add('on');
+                    detectDot.style.background = '#ff4444';
+                    detectDot.style.boxShadow = '0 0 10px #ff4444';
+                    detectText.textContent = 'PERSONNE!';
+                    detectText.style.color = '#ff4444';
+                } else if (data.detection_enabled) {
+                    detectDot.classList.add('on');
+                    detectDot.style.background = '#44ff44';
+                    detectDot.style.boxShadow = '0 0 10px #44ff44';
+                    detectText.textContent = 'Detection: ON';
+                    detectText.style.color = '#fff';
+                } else {
+                    detectDot.classList.remove('on');
+                    detectDot.style.background = '#ff4444';
+                    detectDot.style.boxShadow = 'none';
+                    detectText.textContent = 'Detection: OFF';
+                    detectText.style.color = '#fff';
+                }
+
                 // Sensors
                 if (data.sensors) {
                     const s = data.sensors;
@@ -482,6 +521,19 @@ HTML_PAGE = """
             }).catch(e => log('Erreur: ' + e, 'err'));
         }
 
+        function toggleDetection(enable) {
+            const endpoint = enable ? '/api/detection/start' : '/api/detection/stop';
+            fetch(endpoint, {method: 'POST'})
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    log('Detection ' + (enable ? 'activee' : 'desactivee'), 'ok');
+                } else {
+                    log('Erreur detection: ' + (data.error || '?'), 'err');
+                }
+            }).catch(e => log('Erreur: ' + e, 'err'));
+        }
+
         // Raccourcis clavier
         document.addEventListener('keydown', function(e) {
             if (e.repeat) return;
@@ -545,6 +597,20 @@ def init_camera():
     camera_type = None
     logger.info("Aucune camera disponible")
     return False
+
+def init_person_detector():
+    """Initialise le détecteur de personnes HOG"""
+    global hog_detector
+    try:
+        import cv2
+        hog_detector = cv2.HOGDescriptor()
+        hog_detector.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        logger.info("Detecteur de personnes HOG initialise")
+        return True
+    except Exception as e:
+        logger.warning(f"Erreur initialisation detecteur: {e}")
+        hog_detector = None
+        return False
 
 def start_camera_stream():
     """Démarre le streaming caméra"""
@@ -621,6 +687,106 @@ def generate_frames():
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
         time.sleep(0.04)  # ~25 FPS
+
+# ==================== PERSON DETECTION ====================
+
+def detect_person_in_frame():
+    """Détecte une personne dans la frame actuelle"""
+    global person_detected
+    if not camera_streaming or camera is None or hog_detector is None:
+        return False
+
+    try:
+        import cv2
+
+        # Capture frame pour analyse
+        with camera_lock:
+            if camera_type == 'picamera2':
+                frame = camera.capture_array()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            elif camera_type == 'opencv':
+                ret, frame = camera.read()
+                if not ret:
+                    return False
+            else:
+                return False
+
+        # Appliquer rotation si nécessaire
+        if camera_rotation != 0:
+            frame = rotate_frame(frame, camera_rotation)
+
+        # Réduire la taille pour accélérer la détection
+        scale = 0.5
+        small_frame = cv2.resize(frame, None, fx=scale, fy=scale)
+
+        # Détection HOG
+        boxes, weights = hog_detector.detectMultiScale(
+            small_frame,
+            winStride=(8, 8),
+            padding=(4, 4),
+            scale=1.05
+        )
+
+        # Filtrer par confiance
+        detected = len([w for w in weights if w > 0.5]) > 0
+        return detected
+
+    except Exception as e:
+        logger.error(f"Erreur detection: {e}")
+        return False
+
+def person_detection_thread():
+    """Thread de détection de personnes"""
+    global person_detected, last_person_alert
+
+    while True:
+        if person_detection_enabled and camera_streaming:
+            detected = detect_person_in_frame()
+
+            if detected:
+                person_detected = True
+                current_time = time.time()
+
+                # Déclencher l'alarme avec cooldown
+                if current_time - last_person_alert > person_detection_cooldown:
+                    last_person_alert = current_time
+                    logger.warning("PERSONNE DETECTEE - Alarme!")
+
+                    # Envoyer alerte WebSocket
+                    socketio.emit('alert', {
+                        'type': 'person_detected',
+                        'alert': 'person',
+                        'message': 'Personne detectee par la camera!'
+                    })
+
+                    # Déclencher l'alarme sur le robot
+                    send_serial_command('alarm')
+                    send_serial_command('led_red')
+            else:
+                person_detected = False
+
+            time.sleep(0.5)  # Vérifier 2 fois par seconde
+        else:
+            person_detected = False
+            time.sleep(1)
+
+def start_person_detection():
+    """Active la détection de personnes"""
+    global person_detection_enabled
+    if hog_detector is None:
+        init_person_detector()
+    if hog_detector is None:
+        return False
+    person_detection_enabled = True
+    logger.info("Detection de personnes activee")
+    return True
+
+def stop_person_detection():
+    """Désactive la détection de personnes"""
+    global person_detection_enabled, person_detected
+    person_detection_enabled = False
+    person_detected = False
+    logger.info("Detection de personnes desactivee")
 
 # ==================== SERIAL COMMUNICATION ====================
 
@@ -708,6 +874,8 @@ def status_broadcast_thread():
             'robot_connected': robot_connected,
             'camera_available': camera is not None,
             'camera_streaming': camera_streaming,
+            'detection_enabled': person_detection_enabled,
+            'person_detected': person_detected,
             'sensors': last_status
         })
         time.sleep(2)
@@ -771,6 +939,29 @@ def api_camera_rotation():
     """API: Obtenir la rotation actuelle"""
     return jsonify({"rotation": camera_rotation})
 
+@app.route('/api/detection/start', methods=['POST'])
+def api_detection_start():
+    """API: Activer la détection de personnes"""
+    if not camera_streaming:
+        return jsonify({"success": False, "error": "Camera doit etre active"})
+    success = start_person_detection()
+    return jsonify({"success": success})
+
+@app.route('/api/detection/stop', methods=['POST'])
+def api_detection_stop():
+    """API: Désactiver la détection de personnes"""
+    stop_person_detection()
+    return jsonify({"success": True})
+
+@app.route('/api/detection/status', methods=['GET'])
+def api_detection_status():
+    """API: Obtenir le status de la détection"""
+    return jsonify({
+        "enabled": person_detection_enabled,
+        "detected": person_detected,
+        "detector_ready": hog_detector is not None
+    })
+
 @app.route('/video_feed')
 def video_feed():
     """Streaming vidéo MJPEG"""
@@ -801,6 +992,8 @@ def handle_connect():
         'robot_connected': robot_connected,
         'camera_available': camera is not None,
         'camera_streaming': camera_streaming,
+        'detection_enabled': person_detection_enabled,
+        'person_detected': person_detected,
         'sensors': last_status
     })
 
@@ -824,6 +1017,8 @@ def handle_get_status():
         'robot_connected': robot_connected,
         'camera_available': camera is not None,
         'camera_streaming': camera_streaming,
+        'detection_enabled': person_detection_enabled,
+        'person_detected': person_detected,
         'sensors': last_status
     })
 
@@ -861,6 +1056,8 @@ def main():
     # Initialisation caméra
     if not args.no_camera:
         init_camera()
+        # Initialiser le détecteur de personnes
+        init_person_detector()
 
     # Thread de lecture série
     serial_thread = threading.Thread(target=serial_reader_thread, daemon=True)
@@ -870,10 +1067,16 @@ def main():
     broadcast_thread = threading.Thread(target=status_broadcast_thread, daemon=True)
     broadcast_thread.start()
 
+    # Thread de détection de personnes
+    detection_thread = threading.Thread(target=person_detection_thread, daemon=True)
+    detection_thread.start()
+
     # Démarrer le serveur avec SocketIO
     logger.info(f"Serveur web: http://{args.host}:{args.web_port}")
     if camera:
         logger.info(f"Camera: {camera_type}, rotation: {camera_rotation}°")
+    if hog_detector:
+        logger.info("Detection de personnes: pret")
 
     try:
         socketio.run(app, host=args.host, port=args.web_port,
@@ -881,6 +1084,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        stop_person_detection()
         stop_camera_stream()
         disconnect_serial()
 
