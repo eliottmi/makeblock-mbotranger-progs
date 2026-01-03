@@ -1041,21 +1041,9 @@ def init_camera():
 def find_haarcascade():
     """Trouve le fichier haarcascade_frontalface_default.xml"""
     import os
+    import glob
+    import sys
     cascade_name = 'haarcascade_frontalface_default.xml'
-
-    # Liste des emplacements possibles
-    possible_paths = [
-        # OpenCV 4.x avec cv2.data
-        '/usr/share/opencv4/haarcascades/' + cascade_name,
-        '/usr/local/share/opencv4/haarcascades/' + cascade_name,
-        # OpenCV 3.x
-        '/usr/share/opencv/haarcascades/' + cascade_name,
-        '/usr/local/share/opencv/haarcascades/' + cascade_name,
-        # Installation pip
-        '/usr/local/lib/python3.*/dist-packages/cv2/data/' + cascade_name,
-        # Raspberry Pi OS
-        '/usr/share/opencv4/haarcascades/' + cascade_name,
-    ]
 
     # Essayer cv2.data d'abord (OpenCV >= 4.0)
     try:
@@ -1063,23 +1051,88 @@ def find_haarcascade():
         if hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades'):
             path = cv2.data.haarcascades + cascade_name
             if os.path.exists(path):
+                logger.info(f"Cascade trouvee via cv2.data: {path}")
                 return path
     except:
         pass
 
+    # Trouver le répertoire d'installation de cv2
+    try:
+        import cv2
+        cv2_path = os.path.dirname(cv2.__file__)
+        cv2_data_path = os.path.join(cv2_path, 'data', cascade_name)
+        if os.path.exists(cv2_data_path):
+            logger.info(f"Cascade trouvee dans cv2: {cv2_data_path}")
+            return cv2_data_path
+    except:
+        pass
+
+    # Liste des emplacements possibles
+    possible_paths = [
+        # OpenCV 4.x système
+        '/usr/share/opencv4/haarcascades/' + cascade_name,
+        '/usr/local/share/opencv4/haarcascades/' + cascade_name,
+        # OpenCV 3.x système
+        '/usr/share/opencv/haarcascades/' + cascade_name,
+        '/usr/local/share/opencv/haarcascades/' + cascade_name,
+        # Installation pip (différentes versions Python)
+        '/usr/lib/python3/dist-packages/cv2/data/' + cascade_name,
+        '/usr/local/lib/python3/dist-packages/cv2/data/' + cascade_name,
+        '/usr/lib/python3.*/dist-packages/cv2/data/' + cascade_name,
+        '/usr/local/lib/python3.*/dist-packages/cv2/data/' + cascade_name,
+        # Home pip install
+        os.path.expanduser('~/.local/lib/python3.*/site-packages/cv2/data/') + cascade_name,
+        # Venv
+        os.path.join(sys.prefix, 'lib/python*/site-packages/cv2/data/', cascade_name),
+        # Fichier local (à côté du script)
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), cascade_name),
+    ]
+
     # Chercher dans les emplacements connus
-    import glob
     for pattern in possible_paths:
         matches = glob.glob(pattern)
-        if matches:
+        if matches and os.path.exists(matches[0]):
+            logger.info(f"Cascade trouvee: {matches[0]}")
             return matches[0]
 
-    # Chercher récursivement dans /usr
-    for root, dirs, files in os.walk('/usr/share'):
-        if cascade_name in files:
-            return os.path.join(root, cascade_name)
+    # Chercher récursivement dans /usr/lib et /usr/share
+    for search_dir in ['/usr/lib', '/usr/share', '/usr/local']:
+        if os.path.exists(search_dir):
+            for root, dirs, files in os.walk(search_dir):
+                if cascade_name in files:
+                    path = os.path.join(root, cascade_name)
+                    logger.info(f"Cascade trouvee par recherche: {path}")
+                    return path
 
+    # Télécharger si non trouvé
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cascade_name)
+    if download_haarcascade(local_path):
+        return local_path
+
+    logger.error("Impossible de trouver ou telecharger haarcascade")
     return None
+
+def download_haarcascade(destination):
+    """Télécharge le fichier haarcascade depuis GitHub"""
+    import urllib.request
+    import os
+
+    url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+
+    try:
+        logger.info(f"Telechargement du fichier cascade depuis GitHub...")
+        urllib.request.urlretrieve(url, destination)
+        if os.path.exists(destination) and os.path.getsize(destination) > 1000:
+            logger.info(f"Cascade telecharge: {destination}")
+            return True
+        else:
+            logger.error("Fichier telecharge invalide")
+            if os.path.exists(destination):
+                os.remove(destination)
+            return False
+    except Exception as e:
+        logger.error(f"Erreur telechargement cascade: {e}")
+        return False
 
 def init_person_detector():
     """Initialise le détecteur de personnes par défaut (motion)"""
