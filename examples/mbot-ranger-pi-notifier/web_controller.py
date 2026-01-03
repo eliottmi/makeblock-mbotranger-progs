@@ -1038,6 +1038,49 @@ def init_camera():
     logger.info("Aucune camera disponible")
     return False
 
+def find_haarcascade():
+    """Trouve le fichier haarcascade_frontalface_default.xml"""
+    import os
+    cascade_name = 'haarcascade_frontalface_default.xml'
+
+    # Liste des emplacements possibles
+    possible_paths = [
+        # OpenCV 4.x avec cv2.data
+        '/usr/share/opencv4/haarcascades/' + cascade_name,
+        '/usr/local/share/opencv4/haarcascades/' + cascade_name,
+        # OpenCV 3.x
+        '/usr/share/opencv/haarcascades/' + cascade_name,
+        '/usr/local/share/opencv/haarcascades/' + cascade_name,
+        # Installation pip
+        '/usr/local/lib/python3.*/dist-packages/cv2/data/' + cascade_name,
+        # Raspberry Pi OS
+        '/usr/share/opencv4/haarcascades/' + cascade_name,
+    ]
+
+    # Essayer cv2.data d'abord (OpenCV >= 4.0)
+    try:
+        import cv2
+        if hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades'):
+            path = cv2.data.haarcascades + cascade_name
+            if os.path.exists(path):
+                return path
+    except:
+        pass
+
+    # Chercher dans les emplacements connus
+    import glob
+    for pattern in possible_paths:
+        matches = glob.glob(pattern)
+        if matches:
+            return matches[0]
+
+    # Chercher récursivement dans /usr
+    for root, dirs, files in os.walk('/usr/share'):
+        if cascade_name in files:
+            return os.path.join(root, cascade_name)
+
+    return None
+
 def init_person_detector():
     """Initialise le détecteur de personnes par défaut (motion)"""
     global hog_detector, face_cascade
@@ -1049,13 +1092,17 @@ def init_person_detector():
         logger.info("Detecteur HOG initialise")
 
         # Initialiser cascade Haar pour visages
-        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        face_cascade = cv2.CascadeClassifier(cascade_path)
-        if face_cascade.empty():
-            logger.warning("Cascade Haar visage non chargee")
-            face_cascade = None
+        cascade_path = find_haarcascade()
+        if cascade_path:
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            if face_cascade.empty():
+                logger.warning("Cascade Haar visage non chargee")
+                face_cascade = None
+            else:
+                logger.info(f"Detecteur visage Haar initialise: {cascade_path}")
         else:
-            logger.info("Detecteur visage Haar initialise")
+            logger.warning("Fichier haarcascade non trouve")
+            face_cascade = None
 
         return True
     except Exception as e:
@@ -1075,10 +1122,15 @@ def init_detector_for_algorithm(algorithm):
             logger.info("Detecteur HOG initialise")
 
         elif algorithm == 'face' and face_cascade is None:
-            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-            face_cascade = cv2.CascadeClassifier(cascade_path)
-            if not face_cascade.empty():
-                logger.info("Detecteur visage Haar initialise")
+            cascade_path = find_haarcascade()
+            if cascade_path:
+                face_cascade = cv2.CascadeClassifier(cascade_path)
+                if not face_cascade.empty():
+                    logger.info(f"Detecteur visage Haar initialise: {cascade_path}")
+                else:
+                    logger.warning("Cascade Haar non chargee")
+            else:
+                logger.warning("Fichier haarcascade non trouve")
 
         elif algorithm == 'mobilenet' and mobilenet_net is None:
             # MobileNet SSD pour détection de personnes
@@ -1285,13 +1337,19 @@ def detect_face(frame):
     if face_cascade is None:
         # Essayer de charger la cascade si pas encore fait
         try:
-            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            cascade_path = find_haarcascade()
+            if cascade_path is None:
+                logger.error("Fichier haarcascade non trouve")
+                with detection_boxes_lock:
+                    detection_boxes = []
+                return False
             face_cascade = cv2.CascadeClassifier(cascade_path)
             if face_cascade.empty():
                 logger.error("Impossible de charger la cascade Haar")
                 with detection_boxes_lock:
                     detection_boxes = []
                 return False
+            logger.info(f"Cascade Haar chargee: {cascade_path}")
         except Exception as e:
             logger.error(f"Erreur chargement cascade: {e}")
             with detection_boxes_lock:
