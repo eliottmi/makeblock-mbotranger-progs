@@ -1003,6 +1003,8 @@ def detect_person_in_frame():
     """Détecte une personne dans la frame actuelle"""
     global person_detected
     if not camera_streaming or camera is None or hog_detector is None:
+        logger.debug("Detection skip: camera=%s, streaming=%s, hog=%s",
+                    camera is not None, camera_streaming, hog_detector is not None)
         return False
 
     try:
@@ -1016,6 +1018,7 @@ def detect_person_in_frame():
             elif camera_type == 'opencv':
                 ret, frame = camera.read()
                 if not ret:
+                    logger.debug("Detection: echec capture frame")
                     return False
             else:
                 return False
@@ -1024,20 +1027,25 @@ def detect_person_in_frame():
         if camera_rotation != 0:
             frame = rotate_frame(frame, camera_rotation)
 
-        # Réduire la taille pour accélérer la détection
-        scale = 0.5
+        # Réduire la taille pour accélérer la détection (garder assez grand)
+        scale = 0.6
         small_frame = cv2.resize(frame, None, fx=scale, fy=scale)
 
-        # Détection HOG
+        # Détection HOG avec paramètres optimisés
         boxes, weights = hog_detector.detectMultiScale(
             small_frame,
-            winStride=(8, 8),
-            padding=(4, 4),
-            scale=1.05
+            winStride=(4, 4),      # Plus petit = plus précis mais plus lent
+            padding=(8, 8),        # Plus de padding = meilleure détection aux bords
+            scale=1.02,            # Plus petit = plus de niveaux de détection
+            hitThreshold=0         # Seuil bas = plus sensible
         )
 
-        # Filtrer par confiance
-        detected = len([w for w in weights if w > 0.5]) > 0
+        # Log pour debug
+        if len(boxes) > 0:
+            logger.info(f"Detection HOG: {len(boxes)} zones, poids: {weights}")
+
+        # Retourner vrai si au moins une détection
+        detected = len(boxes) > 0
         return detected
 
     except Exception as e:
@@ -1047,9 +1055,16 @@ def detect_person_in_frame():
 def person_detection_thread():
     """Thread de détection de personnes"""
     global person_detected, last_person_alert
+    detection_count = 0
+
+    logger.info("Thread de detection de personnes demarre")
 
     while True:
         if person_detection_enabled and camera_streaming:
+            detection_count += 1
+            if detection_count % 20 == 0:  # Log toutes les 10 secondes environ
+                logger.debug(f"Detection active, scan #{detection_count}")
+
             detected = detect_person_in_frame()
 
             if detected:
@@ -1059,7 +1074,7 @@ def person_detection_thread():
                 # Déclencher l'alarme avec cooldown
                 if current_time - last_person_alert > person_detection_cooldown:
                     last_person_alert = current_time
-                    logger.warning("PERSONNE DETECTEE - Alarme!")
+                    logger.warning("!!! PERSONNE DETECTEE - Declenchement alarme !!!")
 
                     # Envoyer alerte WebSocket
                     socketio.emit('alert', {
@@ -1076,18 +1091,24 @@ def person_detection_thread():
 
             time.sleep(0.5)  # Vérifier 2 fois par seconde
         else:
-            person_detected = False
+            if person_detected:  # Reset si detection etait active
+                person_detected = False
+            detection_count = 0
             time.sleep(1)
 
 def start_person_detection():
     """Active la détection de personnes"""
     global person_detection_enabled
+    logger.info(f"Tentative activation detection: hog={hog_detector is not None}, cam={camera_streaming}")
     if hog_detector is None:
         init_person_detector()
     if hog_detector is None:
+        logger.error("Impossible d'initialiser le detecteur HOG")
         return False
+    if not camera_streaming:
+        logger.warning("Camera non active - detection peut ne pas fonctionner")
     person_detection_enabled = True
-    logger.info("Detection de personnes activee")
+    logger.info("*** Detection de personnes ACTIVEE ***")
     return True
 
 def stop_person_detection():
