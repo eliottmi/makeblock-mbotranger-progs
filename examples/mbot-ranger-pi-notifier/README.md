@@ -168,23 +168,72 @@ Ouvrir dans un navigateur: `http://<ip-du-raspberry>:5000`
 
 **Fonctionnalités de l'interface web:**
 - **Streaming vidéo live** de la caméra Pi/USB
-- Contrôle de mouvement (flèches directionnelles)
+- **Joystick virtuel** tactile pour contrôle précis
+- **Détection de personnes** avec plusieurs algorithmes
 - Contrôle des LEDs et sons
 - Affichage temps réel des capteurs
-- Activation/désactivation du monitoring
 - Historique des alertes
 - Capture de snapshots
-- Raccourcis clavier: Flèches ou ZQSD + Espace (stop)
 
-**Options caméra:**
+### Joystick virtuel
+
+L'interface propose un joystick virtuel pour un contrôle précis du robot:
+
+- **Contrôle tactile/souris**: Glisser le joystick dans la direction souhaitée
+- **Vitesse variable**: Plus le joystick est éloigné du centre, plus le robot va vite
+- **Slider de vitesse**: Ajuster la vitesse maximale (50-255)
+- **Directions**: Avant, arrière, rotation gauche/droite, virages
+
+**Raccourcis clavier:**
+| Touche | Action |
+|--------|--------|
+| ↑ ou Z/W | Avancer |
+| ↓ ou S | Reculer |
+| ← ou Q/A | Tourner à gauche |
+| → ou D | Tourner à droite |
+| Espace | Stop d'urgence |
+
+### Détection de personnes
+
+Le système propose 4 algorithmes de détection:
+
+| Algorithme | Description | Performance | Précision |
+|------------|-------------|-------------|-----------|
+| **Mouvement** | Détection par différence de frames | Très rapide | Tout mouvement |
+| **Visage (Haar)** | Cascade Haar pour visages | Rapide | Visages uniquement |
+| **Corps (HOG)** | Histogramme de gradients orientés | Moyen | Corps entier |
+| **MobileNet SSD** | Réseau de neurones | Lent | Très précis |
+
+**Réglages disponibles:**
+- **Sensibilité** (0-100%): Plus élevé = détecte plus facilement
+- **Cooldown** (1-30s): Délai entre deux alertes
+- **Alarme sonore**: Jouer l'alarme sur le robot
+- **LED rouge**: Allumer la LED lors d'une détection
+
+**Affichage des détections:**
+Les détections sont affichées en temps réel sur le flux vidéo avec des rectangles colorés:
+- 🟡 **Jaune**: Mouvement détecté
+- 🟣 **Magenta**: Visage détecté
+- 🟢 **Vert**: Personne (HOG)
+- 🟠 **Orange**: Personne (MobileNet)
+
+### Options caméra
+
 ```bash
 # Désactiver la caméra
 python3 web_controller.py --no-camera
+
+# Rotation de la caméra (0, 90, 180, 270 degrés)
+python3 web_controller.py --camera-rotation 180
 
 # La caméra détecte automatiquement:
 # 1. Pi Camera (via picamera2)
 # 2. Webcam USB (via OpenCV)
 ```
+
+**Contrôles dans l'interface:**
+- **Rotation**: Boutons 0°, 90°, 180°, 270° pour orienter l'image
+- **Inverser couleurs**: Corrige l'inversion R/B sur certaines caméras (activé par défaut pour Pi Camera)
 
 ## Configuration
 
