@@ -53,6 +53,7 @@ camera_streaming = False
 camera_lock = threading.Lock()
 camera_type = None
 camera_rotation = 270  # Rotation en degrés (0, 90, 180, 270) - 270 = rotation gauche
+camera_color_swap = False  # Inverser R et B si couleurs incorrectes
 
 # Person detection
 person_detection_enabled = False
@@ -344,6 +345,9 @@ HTML_PAGE = """
                         <button class="btn-small" onclick="rotateCamera(90)">90°</button>
                         <button class="btn-small" onclick="rotateCamera(180)">180°</button>
                         <button class="btn-small" onclick="rotateCamera(270)">270°</button>
+                    </div>
+                    <div class="camera-controls" style="margin-top: 8px;">
+                        <button class="btn-small yellow" id="btnColorSwap" onclick="toggleColorSwap()">Inverser couleurs</button>
                     </div>
                 </div>
 
@@ -676,6 +680,20 @@ HTML_PAGE = """
                     }
                 } else {
                     log('Erreur rotation: ' + (data.error || '?'), 'err');
+                }
+            }).catch(e => log('Erreur: ' + e, 'err'));
+        }
+
+        function toggleColorSwap() {
+            fetch('/api/camera/colorswap', {method: 'POST'})
+            .then(r => r.json()).then(data => {
+                if (data.success) {
+                    log('Couleurs ' + (data.swapped ? 'inversees' : 'normales'), 'ok');
+                    // Rafraichir le flux
+                    if (cameraActive) {
+                        const feed = document.getElementById('cameraFeed');
+                        feed.src = '/video_feed?' + Date.now();
+                    }
                 }
             }).catch(e => log('Erreur: ' + e, 'err'));
         }
@@ -1144,6 +1162,10 @@ def get_camera_frame():
             # Appliquer la rotation
             if camera_rotation != 0:
                 frame = rotate_frame(frame, camera_rotation)
+
+            # Inverser les canaux R et B si nécessaire
+            if camera_color_swap:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             # Dessiner les rectangles de détection
             if person_detection_enabled:
@@ -1647,6 +1669,14 @@ def api_camera_rotate():
 def api_camera_rotation():
     """API: Obtenir la rotation actuelle"""
     return jsonify({"rotation": camera_rotation})
+
+@app.route('/api/camera/colorswap', methods=['POST'])
+def api_camera_colorswap():
+    """API: Inverser les canaux de couleur R et B"""
+    global camera_color_swap
+    camera_color_swap = not camera_color_swap
+    logger.info(f"Color swap: {'ON' if camera_color_swap else 'OFF'}")
+    return jsonify({"success": True, "swapped": camera_color_swap})
 
 @app.route('/api/detection/start', methods=['POST'])
 def api_detection_start():
