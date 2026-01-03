@@ -166,6 +166,106 @@ HTML_PAGE = """
         .btn-small.blue { background: linear-gradient(145deg, #4444cc, #2222aa); }
         .btn-small.yellow { background: linear-gradient(145deg, #cccc44, #aaaa22); }
         .btn-small.purple { background: linear-gradient(145deg, #cc44cc, #aa22aa); }
+        /* Joystick styles */
+        .joystick-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+        }
+        .joystick-area {
+            position: relative;
+            width: 180px;
+            height: 180px;
+            background: radial-gradient(circle, #2a2a4c 0%, #1a1a2e 100%);
+            border-radius: 50%;
+            border: 3px solid #3a3a5c;
+            touch-action: none;
+            user-select: none;
+        }
+        .joystick-base {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100px;
+            height: 100px;
+            background: radial-gradient(circle, #4a4a6c 0%, #3a3a5c 100%);
+            border-radius: 50%;
+            opacity: 0.3;
+        }
+        .joystick-stick {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60px;
+            height: 60px;
+            background: radial-gradient(circle at 30% 30%, #88ccff, #4488cc);
+            border-radius: 50%;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4), inset 0 2px 10px rgba(255,255,255,0.2);
+            cursor: grab;
+            transition: box-shadow 0.1s;
+        }
+        .joystick-stick:active { cursor: grabbing; box-shadow: 0 2px 10px rgba(136,204,255,0.6); }
+        .joystick-stick.active { box-shadow: 0 0 20px rgba(136,204,255,0.8); }
+        .joystick-directions {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 160px;
+            height: 160px;
+            pointer-events: none;
+        }
+        .joystick-directions span {
+            position: absolute;
+            color: #555;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .joystick-directions .up { top: 5px; left: 50%; transform: translateX(-50%); }
+        .joystick-directions .down { bottom: 5px; left: 50%; transform: translateX(-50%); }
+        .joystick-directions .left { left: 5px; top: 50%; transform: translateY(-50%); }
+        .joystick-directions .right { right: 5px; top: 50%; transform: translateY(-50%); }
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            max-width: 200px;
+        }
+        .speed-control label { color: #888; font-size: 0.85em; white-space: nowrap; }
+        .speed-slider {
+            flex: 1;
+            -webkit-appearance: none;
+            height: 8px;
+            border-radius: 4px;
+            background: linear-gradient(90deg, #2a4c2a, #44cc44);
+            outline: none;
+        }
+        .speed-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        .speed-value {
+            color: #88ff88;
+            font-weight: bold;
+            min-width: 45px;
+            text-align: right;
+        }
+        .joystick-info {
+            display: flex;
+            gap: 20px;
+            font-size: 0.8em;
+            color: #888;
+        }
+        .joystick-info span { color: #88ccff; }
         .sensor-display { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
         .sensor-card {
             background: rgba(0,0,0,0.2);
@@ -241,16 +341,27 @@ HTML_PAGE = """
 
                 <div class="panel">
                     <h2>Controles</h2>
-                    <div class="controls-grid">
-                        <div></div>
-                        <button class="btn" onmousedown="cmd('forward')" ontouchstart="cmd('forward')">^</button>
-                        <div></div>
-                        <button class="btn" onmousedown="cmd('left')" ontouchstart="cmd('left')">&lt;</button>
-                        <button class="btn stop" onmousedown="cmd('stop')" ontouchstart="cmd('stop')">X</button>
-                        <button class="btn" onmousedown="cmd('right')" ontouchstart="cmd('right')">&gt;</button>
-                        <div></div>
-                        <button class="btn" onmousedown="cmd('backward')" ontouchstart="cmd('backward')">v</button>
-                        <div></div>
+                    <div class="joystick-container">
+                        <div class="joystick-area" id="joystickArea">
+                            <div class="joystick-directions">
+                                <span class="up">^</span>
+                                <span class="down">v</span>
+                                <span class="left">&lt;</span>
+                                <span class="right">&gt;</span>
+                            </div>
+                            <div class="joystick-base"></div>
+                            <div class="joystick-stick" id="joystickStick"></div>
+                        </div>
+                        <div class="speed-control">
+                            <label>Vitesse:</label>
+                            <input type="range" class="speed-slider" id="speedSlider" min="50" max="255" value="150">
+                            <span class="speed-value" id="speedValue">150</span>
+                        </div>
+                        <div class="joystick-info">
+                            <div>X: <span id="joystickX">0</span></div>
+                            <div>Y: <span id="joystickY">0</span></div>
+                        </div>
+                        <button class="btn stop" onclick="cmdMove('stop')" style="margin-top: 5px;">STOP</button>
                     </div>
                 </div>
             </div>
@@ -534,21 +645,219 @@ HTML_PAGE = """
             }).catch(e => log('Erreur: ' + e, 'err'));
         }
 
+        // ==================== JOYSTICK ====================
+        let joystickActive = false;
+        let joystickX = 0, joystickY = 0;
+        let lastCommand = '';
+        let commandInterval = null;
+        let currentSpeed = 150;
+
+        function initJoystick() {
+            const area = document.getElementById('joystickArea');
+            const stick = document.getElementById('joystickStick');
+            const speedSlider = document.getElementById('speedSlider');
+            const speedValue = document.getElementById('speedValue');
+
+            // Speed slider
+            speedSlider.addEventListener('input', function() {
+                currentSpeed = parseInt(this.value);
+                speedValue.textContent = currentSpeed;
+            });
+
+            // Mouse events
+            area.addEventListener('mousedown', startJoystick);
+            document.addEventListener('mousemove', moveJoystick);
+            document.addEventListener('mouseup', stopJoystick);
+
+            // Touch events
+            area.addEventListener('touchstart', startJoystick, {passive: false});
+            document.addEventListener('touchmove', moveJoystick, {passive: false});
+            document.addEventListener('touchend', stopJoystick);
+        }
+
+        function startJoystick(e) {
+            e.preventDefault();
+            joystickActive = true;
+            document.getElementById('joystickStick').classList.add('active');
+            moveJoystick(e);
+            // Envoyer commandes periodiquement
+            if (commandInterval) clearInterval(commandInterval);
+            commandInterval = setInterval(sendJoystickCommand, 100);
+        }
+
+        function moveJoystick(e) {
+            if (!joystickActive) return;
+            e.preventDefault();
+
+            const area = document.getElementById('joystickArea');
+            const stick = document.getElementById('joystickStick');
+            const rect = area.getBoundingClientRect();
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+            const maxDist = rect.width / 2 - 30;
+
+            // Get position
+            let clientX, clientY;
+            if (e.touches) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+
+            let dx = clientX - rect.left - centerX;
+            let dy = clientY - rect.top - centerY;
+
+            // Limit to circle
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist > maxDist) {
+                dx = dx / dist * maxDist;
+                dy = dy / dist * maxDist;
+            }
+
+            // Update stick position
+            stick.style.left = (centerX + dx) + 'px';
+            stick.style.top = (centerY + dy) + 'px';
+
+            // Calculate normalized values (-100 to 100)
+            joystickX = Math.round(dx / maxDist * 100);
+            joystickY = Math.round(-dy / maxDist * 100); // Invert Y
+
+            document.getElementById('joystickX').textContent = joystickX;
+            document.getElementById('joystickY').textContent = joystickY;
+        }
+
+        function stopJoystick(e) {
+            if (!joystickActive) return;
+            joystickActive = false;
+
+            const stick = document.getElementById('joystickStick');
+            stick.classList.remove('active');
+            stick.style.left = '50%';
+            stick.style.top = '50%';
+
+            joystickX = 0;
+            joystickY = 0;
+            document.getElementById('joystickX').textContent = '0';
+            document.getElementById('joystickY').textContent = '0';
+
+            if (commandInterval) {
+                clearInterval(commandInterval);
+                commandInterval = null;
+            }
+            cmdMove('stop');
+        }
+
+        function sendJoystickCommand() {
+            if (!joystickActive) return;
+
+            // Dead zone
+            const deadZone = 15;
+            if (Math.abs(joystickX) < deadZone && Math.abs(joystickY) < deadZone) {
+                if (lastCommand !== 'stop') {
+                    cmdMove('stop');
+                    lastCommand = 'stop';
+                }
+                return;
+            }
+
+            // Calculate speed based on distance from center
+            const dist = Math.sqrt(joystickX*joystickX + joystickY*joystickY);
+            const speedFactor = Math.min(dist / 100, 1);
+            const speed = Math.round(currentSpeed * speedFactor);
+
+            // Determine direction
+            let newCmd = '';
+            const angle = Math.atan2(joystickY, joystickX) * 180 / Math.PI;
+
+            if (angle > 60 && angle < 120) {
+                newCmd = 'move:' + speed + ':' + speed;  // Forward
+            } else if (angle < -60 && angle > -120) {
+                newCmd = 'move:' + (-speed) + ':' + (-speed);  // Backward
+            } else if (angle >= -60 && angle <= 60) {
+                // Right or forward-right
+                if (joystickY > deadZone) {
+                    newCmd = 'move:' + speed + ':' + Math.round(speed * 0.3);  // Forward-right
+                } else if (joystickY < -deadZone) {
+                    newCmd = 'move:' + (-speed) + ':' + Math.round(-speed * 0.3);  // Backward-right
+                } else {
+                    newCmd = 'move:' + speed + ':' + (-speed);  // Spin right
+                }
+            } else {
+                // Left or forward-left
+                if (joystickY > deadZone) {
+                    newCmd = 'move:' + Math.round(speed * 0.3) + ':' + speed;  // Forward-left
+                } else if (joystickY < -deadZone) {
+                    newCmd = 'move:' + Math.round(-speed * 0.3) + ':' + (-speed);  // Backward-left
+                } else {
+                    newCmd = 'move:' + (-speed) + ':' + speed;  // Spin left
+                }
+            }
+
+            if (newCmd !== lastCommand) {
+                cmdMove(newCmd);
+                lastCommand = newCmd;
+            }
+        }
+
+        function cmdMove(command) {
+            if (socket && socket.connected) {
+                socket.emit('command', {command: command});
+            } else {
+                fetch('/api/command', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({command: command})
+                });
+            }
+        }
+
         // Raccourcis clavier
+        let keysPressed = {};
         document.addEventListener('keydown', function(e) {
             if (e.repeat) return;
-            switch(e.key) {
-                case 'ArrowUp': case 'z': case 'w': cmd('forward'); break;
-                case 'ArrowDown': case 's': cmd('backward'); break;
-                case 'ArrowLeft': case 'q': case 'a': cmd('left'); break;
-                case 'ArrowRight': case 'd': cmd('right'); break;
-                case ' ': cmd('stop'); e.preventDefault(); break;
-            }
+            keysPressed[e.key] = true;
+            handleKeyboardMovement();
+            if (e.key === ' ') e.preventDefault();
         });
+
+        document.addEventListener('keyup', function(e) {
+            delete keysPressed[e.key];
+            handleKeyboardMovement();
+        });
+
+        function handleKeyboardMovement() {
+            const up = keysPressed['ArrowUp'] || keysPressed['z'] || keysPressed['w'];
+            const down = keysPressed['ArrowDown'] || keysPressed['s'];
+            const left = keysPressed['ArrowLeft'] || keysPressed['q'] || keysPressed['a'];
+            const right = keysPressed['ArrowRight'] || keysPressed['d'];
+            const stop = keysPressed[' '];
+
+            if (stop || (!up && !down && !left && !right)) {
+                cmdMove('stop');
+                return;
+            }
+
+            let leftSpeed = 0, rightSpeed = 0;
+            const speed = currentSpeed;
+
+            if (up) { leftSpeed += speed; rightSpeed += speed; }
+            if (down) { leftSpeed -= speed; rightSpeed -= speed; }
+            if (left) { leftSpeed -= speed * 0.5; rightSpeed += speed * 0.5; }
+            if (right) { leftSpeed += speed * 0.5; rightSpeed -= speed * 0.5; }
+
+            // Clamp values
+            leftSpeed = Math.max(-255, Math.min(255, Math.round(leftSpeed)));
+            rightSpeed = Math.max(-255, Math.min(255, Math.round(rightSpeed)));
+
+            cmdMove('move:' + leftSpeed + ':' + rightSpeed);
+        }
 
         // Demarrage
         log('Interface prete');
         connectWebSocket();
+        initJoystick();
     </script>
 </body>
 </html>

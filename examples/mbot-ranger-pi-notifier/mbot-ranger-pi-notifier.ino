@@ -153,6 +153,10 @@ void processCommand(String cmd) {
     startMonitoring();
   }
   else if (cmd == "stop") {
+    stopMotors();
+    // Ne pas arrêter le monitoring automatiquement, juste les moteurs
+  }
+  else if (cmd == "stop_monitor") {
     stopMonitoring();
   }
   else if (cmd == "status") {
@@ -214,6 +218,17 @@ void processCommand(String cmd) {
   }
   else if (cmd == "help") {
     sendHelp();
+  }
+  else if (cmd.startsWith("move:")) {
+    // Format: move:leftSpeed:rightSpeed
+    // Vitesses de -255 à 255
+    int firstColon = cmd.indexOf(':', 5);
+    if (firstColon > 0) {
+      int leftSpeed = cmd.substring(5, firstColon).toInt();
+      int rightSpeed = cmd.substring(firstColon + 1).toInt();
+      setMotors(leftSpeed, rightSpeed);
+      // Pas de ACK pour éviter de saturer la liaison série
+    }
   }
   else if (cmd.startsWith("obstacle_")) {
     obstacleAlertEnabled = cmd.endsWith("on");
@@ -294,7 +309,7 @@ void sendError(String message) {
 void sendHelp() {
   Serial.println("{\"type\":\"help\",\"commands\":[");
   Serial.println("\"start/monitor - Start monitoring\",");
-  Serial.println("\"stop - Stop monitoring\",");
+  Serial.println("\"stop - Stop motors/monitoring\",");
   Serial.println("\"status - Get current status\",");
   Serial.println("\"calibrate - Recalibrate sensors\",");
   Serial.println("\"ping - Test connection\",");
@@ -302,6 +317,7 @@ void sendHelp() {
   Serial.println("\"beep - Play beep\",");
   Serial.println("\"alarm - Play alarm\",");
   Serial.println("\"forward/backward/left/right - Move robot\",");
+  Serial.println("\"move:left:right - Set motor speeds (-255 to 255)\",");
   Serial.println("\"obstacle_on/off - Toggle obstacle alerts\",");
   Serial.println("\"motion_on/off - Toggle motion alerts\"");
   Serial.println("]}");
@@ -439,6 +455,16 @@ void spinRight(int speed) {
 void stopMotors() {
   motorLeft.setMotorPwm(0);
   motorRight.setMotorPwm(0);
+}
+
+void setMotors(int leftSpeed, int rightSpeed) {
+  // Limiter les vitesses à -255/+255
+  leftSpeed = constrain(leftSpeed, -255, 255);
+  rightSpeed = constrain(rightSpeed, -255, 255);
+
+  // Appliquer aux moteurs (polarité inversée pour le moteur gauche)
+  motorLeft.setMotorPwm(-leftSpeed);
+  motorRight.setMotorPwm(rightSpeed);
 }
 
 // ==================== CONTRÔLE DES LEDs ====================
