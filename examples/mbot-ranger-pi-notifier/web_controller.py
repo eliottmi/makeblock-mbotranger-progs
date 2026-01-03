@@ -67,6 +67,8 @@ hog_detector = None
 face_cascade = None
 mobilenet_net = None
 previous_frame = None  # Pour détection de mouvement
+detection_boxes = []  # Rectangles de détection pour affichage
+detection_boxes_lock = threading.Lock()
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1123,7 +1125,7 @@ def rotate_frame(frame, rotation):
 
 def get_camera_frame():
     """Capture une frame de la caméra"""
-    global camera_rotation
+    global camera_rotation, detection_boxes
     with camera_lock:
         if not camera_streaming or camera is None:
             return None
@@ -1142,6 +1144,28 @@ def get_camera_frame():
             # Appliquer la rotation
             if camera_rotation != 0:
                 frame = rotate_frame(frame, camera_rotation)
+
+            # Dessiner les rectangles de détection
+            if person_detection_enabled:
+                with detection_boxes_lock:
+                    boxes_to_draw = detection_boxes.copy()
+
+                for box in boxes_to_draw:
+                    x, y, w, h = box['rect']
+                    label = box.get('label', '')
+                    color = box.get('color', (0, 255, 0))  # Vert par défaut
+
+                    # Rectangle
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+
+                    # Label
+                    if label:
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        font_scale = 0.6
+                        thickness = 2
+                        (text_w, text_h), _ = cv2.getTextSize(label, font, font_scale, thickness)
+                        cv2.rectangle(frame, (x, y - text_h - 10), (x + text_w + 4, y), color, -1)
+                        cv2.putText(frame, label, (x + 2, y - 5), font, font_scale, (0, 0, 0), thickness)
 
             _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             return jpeg.tobytes()
@@ -1182,7 +1206,7 @@ def capture_frame_for_detection():
 
 def detect_motion(frame):
     """Détection de mouvement - très rapide et fiable"""
-    global previous_frame
+    global previous_frame, detection_boxes
     import cv2
 
     # Convertir en niveaux de gris
@@ -1210,25 +1234,35 @@ def detect_motion(frame):
     # Mettre à jour le frame précédent (lentement pour éviter la dérive)
     previous_frame = cv2.addWeighted(previous_frame, 0.7, gray, 0.3, 0)
 
-    # Filtrer les petits mouvements
+    # Filtrer les petits mouvements et collecter les rectangles
     min_area = int(500 + person_detection_sensitivity * 2000)  # 500-2500 pixels
-    significant_motion = False
+    boxes = []
     for contour in contours:
         if cv2.contourArea(contour) > min_area:
-            significant_motion = True
-            break
+            (x, y, w, h) = cv2.boundingRect(contour)
+            boxes.append({
+                'rect': (x, y, w, h),
+                'label': 'Mouvement',
+                'color': (0, 255, 255)  # Jaune
+            })
 
-    if significant_motion:
-        logger.info(f"Mouvement detecte! (seuil={threshold_value}, min_area={min_area})")
+    # Mettre à jour les rectangles de détection
+    with detection_boxes_lock:
+        detection_boxes = boxes
 
-    return significant_motion
+    if boxes:
+        logger.info(f"Mouvement detecte! {len(boxes)} zone(s)")
+
+    return len(boxes) > 0
 
 def detect_face(frame):
     """Détection de visage avec cascade Haar"""
-    global face_cascade
+    global face_cascade, detection_boxes
     import cv2
 
     if face_cascade is None:
+        with detection_boxes_lock:
+            detection_boxes = []
         return False
 
     # Convertir en niveaux de gris
@@ -1250,18 +1284,31 @@ def detect_face(frame):
         minSize=(min_size, min_size)
     )
 
-    if len(faces) > 0:
-        logger.info(f"Visage detecte! {len(faces)} visage(s)")
-        return True
+    # Convertir les coordonnées à l'échelle originale et créer les boxes
+    boxes = []
+    for (x, y, w, h) in faces:
+        boxes.append({
+            'rect': (int(x / scale), int(y / scale), int(w / scale), int(h / scale)),
+            'label': 'Visage',
+            'color': (255, 0, 255)  # Magenta
+        })
 
-    return False
+    with detection_boxes_lock:
+        detection_boxes = boxes
+
+    if boxes:
+        logger.info(f"Visage detecte! {len(boxes)} visage(s)")
+
+    return len(boxes) > 0
 
 def detect_hog(frame):
     """Détection de personne avec HOG"""
-    global hog_detector
+    global hog_detector, detection_boxes
     import cv2
 
     if hog_detector is None:
+        with detection_boxes_lock:
+            detection_boxes = []
         return False
 
     # Réduire la taille
@@ -1272,7 +1319,7 @@ def detect_hog(frame):
     hit_threshold = person_detection_sensitivity * 0.8
 
     # Détection HOG
-    boxes, weights = hog_detector.detectMultiScale(
+    rects, weights = hog_detector.detectMultiScale(
         small_frame,
         winStride=(8, 8),
         padding=(4, 4),
@@ -1280,26 +1327,35 @@ def detect_hog(frame):
         hitThreshold=hit_threshold
     )
 
-    if len(boxes) > 0:
-        logger.info(f"HOG: {len(boxes)} personne(s) detectee(s)")
-        return True
+    # Convertir les coordonnées et créer les boxes
+    boxes = []
+    for (x, y, w, h) in rects:
+        boxes.append({
+            'rect': (int(x / scale), int(y / scale), int(w / scale), int(h / scale)),
+            'label': 'Personne',
+            'color': (0, 255, 0)  # Vert
+        })
 
-    return False
+    with detection_boxes_lock:
+        detection_boxes = boxes
+
+    if boxes:
+        logger.info(f"HOG: {len(boxes)} personne(s) detectee(s)")
+
+    return len(boxes) > 0
 
 def detect_mobilenet(frame):
     """Détection de personne avec MobileNet SSD"""
-    global mobilenet_net
+    global mobilenet_net, detection_boxes
     import cv2
 
     if mobilenet_net is None:
         logger.warning("MobileNet non disponible")
+        with detection_boxes_lock:
+            detection_boxes = []
         return False
 
-    # Classes MobileNet SSD (15 = personne)
-    CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
-               "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
-               "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
-               "sofa", "train", "tvmonitor"]
+    (h, w) = frame.shape[:2]
 
     # Préparer l'image
     blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
@@ -1310,15 +1366,28 @@ def detect_mobilenet(frame):
     confidence_threshold = 0.3 + person_detection_sensitivity * 0.4  # 0.3-0.7
 
     # Chercher des personnes
+    boxes = []
     for i in range(detections.shape[2]):
         confidence = detections[0, 0, i, 2]
         class_id = int(detections[0, 0, i, 1])
 
         if class_id == 15 and confidence > confidence_threshold:  # 15 = person
-            logger.info(f"MobileNet: personne detectee (confiance={confidence:.2f})")
-            return True
+            # Calculer les coordonnées du rectangle
+            box = detections[0, 0, i, 3:7] * [w, h, w, h]
+            (startX, startY, endX, endY) = box.astype("int")
+            boxes.append({
+                'rect': (startX, startY, endX - startX, endY - startY),
+                'label': f'Personne {int(confidence * 100)}%',
+                'color': (0, 128, 255)  # Orange
+            })
 
-    return False
+    with detection_boxes_lock:
+        detection_boxes = boxes
+
+    if boxes:
+        logger.info(f"MobileNet: {len(boxes)} personne(s) detectee(s)")
+
+    return len(boxes) > 0
 
 def detect_person_in_frame():
     """Détecte une personne dans la frame actuelle selon l'algorithme choisi"""
@@ -1421,9 +1490,11 @@ def start_person_detection():
 
 def stop_person_detection():
     """Désactive la détection de personnes"""
-    global person_detection_enabled, person_detected
+    global person_detection_enabled, person_detected, detection_boxes
     person_detection_enabled = False
     person_detected = False
+    with detection_boxes_lock:
+        detection_boxes = []
     logger.info("Detection de personnes desactivee")
 
 # ==================== SERIAL COMMUNICATION ====================
