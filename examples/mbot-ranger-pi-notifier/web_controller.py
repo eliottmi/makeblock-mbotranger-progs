@@ -53,7 +53,7 @@ camera_streaming = False
 camera_lock = threading.Lock()
 camera_type = None
 camera_rotation = 270  # Rotation en degrés (0, 90, 180, 270) - 270 = rotation gauche
-camera_color_swap = False  # Inverser R et B si couleurs incorrectes
+camera_color_swap = True  # Inverser R et B (activé par défaut pour Pi Camera)
 
 # Person detection
 person_detection_enabled = False
@@ -1283,34 +1283,47 @@ def detect_face(frame):
     import cv2
 
     if face_cascade is None:
-        with detection_boxes_lock:
-            detection_boxes = []
-        return False
+        # Essayer de charger la cascade si pas encore fait
+        try:
+            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            if face_cascade.empty():
+                logger.error("Impossible de charger la cascade Haar")
+                with detection_boxes_lock:
+                    detection_boxes = []
+                return False
+        except Exception as e:
+            logger.error(f"Erreur chargement cascade: {e}")
+            with detection_boxes_lock:
+                detection_boxes = []
+            return False
 
     # Convertir en niveaux de gris
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Réduire pour accélérer
-    scale = 0.5
-    small = cv2.resize(gray, None, fx=scale, fy=scale)
+    # Égaliser l'histogramme pour améliorer le contraste
+    gray = cv2.equalizeHist(gray)
 
-    # Paramètres basés sur la sensibilité
-    min_neighbors = int(3 + person_detection_sensitivity * 5)  # 3-8
-    min_size = int(20 + person_detection_sensitivity * 30)  # 20-50
+    # Paramètres basés sur la sensibilité (inversé: 100% = très sensible)
+    # minNeighbors: moins = plus sensible mais plus de faux positifs
+    min_neighbors = max(1, int(1 + person_detection_sensitivity * 4))  # 1-5
+    # minSize: plus petit = détecte les visages plus loin
+    min_size = int(30 + person_detection_sensitivity * 50)  # 30-80
 
-    # Détection
+    # Détection avec paramètres optimisés
     faces = face_cascade.detectMultiScale(
-        small,
-        scaleFactor=1.1,
+        gray,
+        scaleFactor=1.05,  # Plus petit = plus précis mais plus lent
         minNeighbors=min_neighbors,
-        minSize=(min_size, min_size)
+        minSize=(min_size, min_size),
+        flags=cv2.CASCADE_SCALE_IMAGE
     )
 
-    # Convertir les coordonnées à l'échelle originale et créer les boxes
+    # Créer les boxes
     boxes = []
     for (x, y, w, h) in faces:
         boxes.append({
-            'rect': (int(x / scale), int(y / scale), int(w / scale), int(h / scale)),
+            'rect': (x, y, w, h),
             'label': 'Visage',
             'color': (255, 0, 255)  # Magenta
         })
