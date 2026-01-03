@@ -61,8 +61,12 @@ person_detection_cooldown = 5  # Secondes entre alertes
 person_detection_sensitivity = 0.5  # 0.0 (très sensible) à 1.0 (peu sensible)
 person_alarm_enabled = True  # Jouer l'alarme sur le robot
 person_led_enabled = True  # Allumer LED rouge
+person_detection_algorithm = 'motion'  # 'motion', 'hog', 'face', 'mobilenet'
 last_person_alert = 0
 hog_detector = None
+face_cascade = None
+mobilenet_net = None
+previous_frame = None  # Pour détection de mouvement
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -350,6 +354,15 @@ HTML_PAGE = """
                             <span id="detectStatus" style="margin-left: 10px; color: #888;">Inactive</span>
                         </div>
                         <div class="detection-row" style="margin-top: 10px;">
+                            <label style="color: #888; font-size: 0.85em; min-width: 80px;">Algorithme:</label>
+                            <select id="algorithmSelect" style="flex:1; padding: 5px; border-radius: 5px; background: #2a2a4c; color: #fff; border: 1px solid #3a3a5c;">
+                                <option value="motion">Mouvement (rapide)</option>
+                                <option value="face">Visage (Haar)</option>
+                                <option value="hog">Corps entier (HOG)</option>
+                                <option value="mobilenet">MobileNet SSD (precis)</option>
+                            </select>
+                        </div>
+                        <div class="detection-row" style="margin-top: 8px;">
                             <label style="color: #888; font-size: 0.85em; min-width: 80px;">Sensibilite:</label>
                             <input type="range" class="speed-slider" id="sensitivitySlider" min="0" max="100" value="50" style="flex:1;">
                             <span id="sensitivityValue" style="color: #88ff88; min-width: 40px; text-align: right;">50%</span>
@@ -681,6 +694,7 @@ HTML_PAGE = """
         }
 
         function updateDetectionSettings() {
+            const algorithm = document.getElementById('algorithmSelect').value;
             const sensitivity = parseInt(document.getElementById('sensitivitySlider').value);
             const cooldown = parseInt(document.getElementById('cooldownSlider').value);
             const alarmEnabled = document.getElementById('alarmEnabled').checked;
@@ -690,6 +704,7 @@ HTML_PAGE = """
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
+                    algorithm: algorithm,
                     sensitivity: sensitivity,
                     cooldown: cooldown,
                     alarm_enabled: alarmEnabled,
@@ -697,18 +712,21 @@ HTML_PAGE = """
                 })
             }).then(r => r.json()).then(data => {
                 if (data.success) {
-                    log('Reglages detection mis a jour', 'ok');
+                    log('Algorithme: ' + algorithm + ', sensibilite: ' + sensitivity + '%', 'ok');
                 }
             }).catch(e => log('Erreur: ' + e, 'err'));
         }
 
         function initDetectionControls() {
+            const algorithmSelect = document.getElementById('algorithmSelect');
             const sensitivitySlider = document.getElementById('sensitivitySlider');
             const sensitivityValue = document.getElementById('sensitivityValue');
             const cooldownSlider = document.getElementById('cooldownSlider');
             const cooldownValue = document.getElementById('cooldownValue');
             const alarmEnabled = document.getElementById('alarmEnabled');
             const ledEnabled = document.getElementById('ledEnabled');
+
+            algorithmSelect.addEventListener('change', updateDetectionSettings);
 
             sensitivitySlider.addEventListener('input', function() {
                 sensitivityValue.textContent = this.value + '%';
@@ -727,6 +745,7 @@ HTML_PAGE = """
             fetch('/api/detection/settings')
             .then(r => r.json())
             .then(data => {
+                algorithmSelect.value = data.algorithm || 'motion';
                 sensitivitySlider.value = data.sensitivity;
                 sensitivityValue.textContent = data.sensitivity + '%';
                 cooldownSlider.value = data.cooldown;
@@ -1000,18 +1019,68 @@ def init_camera():
     return False
 
 def init_person_detector():
-    """Initialise le détecteur de personnes HOG"""
-    global hog_detector
+    """Initialise le détecteur de personnes par défaut (motion)"""
+    global hog_detector, face_cascade
     try:
         import cv2
+        # Initialiser HOG pour backup
         hog_detector = cv2.HOGDescriptor()
         hog_detector.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-        logger.info("Detecteur de personnes HOG initialise")
+        logger.info("Detecteur HOG initialise")
+
+        # Initialiser cascade Haar pour visages
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+        if face_cascade.empty():
+            logger.warning("Cascade Haar visage non chargee")
+            face_cascade = None
+        else:
+            logger.info("Detecteur visage Haar initialise")
+
         return True
     except Exception as e:
         logger.warning(f"Erreur initialisation detecteur: {e}")
-        hog_detector = None
         return False
+
+def init_detector_for_algorithm(algorithm):
+    """Initialise le détecteur pour l'algorithme spécifié"""
+    global hog_detector, face_cascade, mobilenet_net
+
+    try:
+        import cv2
+
+        if algorithm == 'hog' and hog_detector is None:
+            hog_detector = cv2.HOGDescriptor()
+            hog_detector.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+            logger.info("Detecteur HOG initialise")
+
+        elif algorithm == 'face' and face_cascade is None:
+            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            if not face_cascade.empty():
+                logger.info("Detecteur visage Haar initialise")
+
+        elif algorithm == 'mobilenet' and mobilenet_net is None:
+            # MobileNet SSD pour détection de personnes
+            try:
+                # Chemins vers les fichiers du modèle
+                import os
+                model_dir = os.path.dirname(os.path.abspath(__file__))
+                prototxt = os.path.join(model_dir, 'MobileNetSSD_deploy.prototxt')
+                caffemodel = os.path.join(model_dir, 'MobileNetSSD_deploy.caffemodel')
+
+                if os.path.exists(prototxt) and os.path.exists(caffemodel):
+                    mobilenet_net = cv2.dnn.readNetFromCaffe(prototxt, caffemodel)
+                    logger.info("MobileNet SSD initialise")
+                else:
+                    logger.warning("Fichiers MobileNet non trouves. Telechargez-les:")
+                    logger.warning("  prototxt: https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/deploy.prototxt")
+                    logger.warning("  caffemodel: https://drive.google.com/file/d/0B3gersZ2cHIxRm5PMWRoTkdHdHc/view")
+            except Exception as e:
+                logger.warning(f"Erreur chargement MobileNet: {e}")
+
+    except Exception as e:
+        logger.error(f"Erreur init detecteur {algorithm}: {e}")
 
 def start_camera_stream():
     """Démarre le streaming caméra"""
@@ -1091,61 +1160,198 @@ def generate_frames():
 
 # ==================== PERSON DETECTION ====================
 
+def capture_frame_for_detection():
+    """Capture une frame pour la détection"""
+    import cv2
+    with camera_lock:
+        if camera_type == 'picamera2':
+            frame = camera.capture_array()
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        elif camera_type == 'opencv':
+            ret, frame = camera.read()
+            if not ret:
+                return None
+        else:
+            return None
+
+    # Appliquer rotation si nécessaire
+    if camera_rotation != 0:
+        frame = rotate_frame(frame, camera_rotation)
+
+    return frame
+
+def detect_motion(frame):
+    """Détection de mouvement - très rapide et fiable"""
+    global previous_frame
+    import cv2
+
+    # Convertir en niveaux de gris
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (21, 21), 0)
+
+    # Premier frame = référence
+    if previous_frame is None:
+        previous_frame = gray
+        return False
+
+    # Calculer la différence avec le frame précédent
+    frame_delta = cv2.absdiff(previous_frame, gray)
+
+    # Seuil basé sur la sensibilité (0 = très sensible, 1 = peu sensible)
+    threshold_value = int(15 + person_detection_sensitivity * 40)  # 15-55
+    _, thresh = cv2.threshold(frame_delta, threshold_value, 255, cv2.THRESH_BINARY)
+
+    # Dilater pour combler les trous
+    thresh = cv2.dilate(thresh, None, iterations=2)
+
+    # Trouver les contours
+    contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Mettre à jour le frame précédent (lentement pour éviter la dérive)
+    previous_frame = cv2.addWeighted(previous_frame, 0.7, gray, 0.3, 0)
+
+    # Filtrer les petits mouvements
+    min_area = int(500 + person_detection_sensitivity * 2000)  # 500-2500 pixels
+    significant_motion = False
+    for contour in contours:
+        if cv2.contourArea(contour) > min_area:
+            significant_motion = True
+            break
+
+    if significant_motion:
+        logger.info(f"Mouvement detecte! (seuil={threshold_value}, min_area={min_area})")
+
+    return significant_motion
+
+def detect_face(frame):
+    """Détection de visage avec cascade Haar"""
+    global face_cascade
+    import cv2
+
+    if face_cascade is None:
+        return False
+
+    # Convertir en niveaux de gris
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Réduire pour accélérer
+    scale = 0.5
+    small = cv2.resize(gray, None, fx=scale, fy=scale)
+
+    # Paramètres basés sur la sensibilité
+    min_neighbors = int(3 + person_detection_sensitivity * 5)  # 3-8
+    min_size = int(20 + person_detection_sensitivity * 30)  # 20-50
+
+    # Détection
+    faces = face_cascade.detectMultiScale(
+        small,
+        scaleFactor=1.1,
+        minNeighbors=min_neighbors,
+        minSize=(min_size, min_size)
+    )
+
+    if len(faces) > 0:
+        logger.info(f"Visage detecte! {len(faces)} visage(s)")
+        return True
+
+    return False
+
+def detect_hog(frame):
+    """Détection de personne avec HOG"""
+    global hog_detector
+    import cv2
+
+    if hog_detector is None:
+        return False
+
+    # Réduire la taille
+    scale = 0.5
+    small_frame = cv2.resize(frame, None, fx=scale, fy=scale)
+
+    # Seuil basé sur la sensibilité
+    hit_threshold = person_detection_sensitivity * 0.8
+
+    # Détection HOG
+    boxes, weights = hog_detector.detectMultiScale(
+        small_frame,
+        winStride=(8, 8),
+        padding=(4, 4),
+        scale=1.05,
+        hitThreshold=hit_threshold
+    )
+
+    if len(boxes) > 0:
+        logger.info(f"HOG: {len(boxes)} personne(s) detectee(s)")
+        return True
+
+    return False
+
+def detect_mobilenet(frame):
+    """Détection de personne avec MobileNet SSD"""
+    global mobilenet_net
+    import cv2
+
+    if mobilenet_net is None:
+        logger.warning("MobileNet non disponible")
+        return False
+
+    # Classes MobileNet SSD (15 = personne)
+    CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+               "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+               "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+               "sofa", "train", "tvmonitor"]
+
+    # Préparer l'image
+    blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
+    mobilenet_net.setInput(blob)
+    detections = mobilenet_net.forward()
+
+    # Seuil de confiance basé sur la sensibilité
+    confidence_threshold = 0.3 + person_detection_sensitivity * 0.4  # 0.3-0.7
+
+    # Chercher des personnes
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        class_id = int(detections[0, 0, i, 1])
+
+        if class_id == 15 and confidence > confidence_threshold:  # 15 = person
+            logger.info(f"MobileNet: personne detectee (confiance={confidence:.2f})")
+            return True
+
+    return False
+
 def detect_person_in_frame():
-    """Détecte une personne dans la frame actuelle"""
+    """Détecte une personne dans la frame actuelle selon l'algorithme choisi"""
     global person_detected
-    if not camera_streaming or camera is None or hog_detector is None:
-        logger.debug("Detection skip: camera=%s, streaming=%s, hog=%s",
-                    camera is not None, camera_streaming, hog_detector is not None)
+
+    if not camera_streaming or camera is None:
         return False
 
     try:
         import cv2
 
-        # Capture frame pour analyse
-        with camera_lock:
-            if camera_type == 'picamera2':
-                frame = camera.capture_array()
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            elif camera_type == 'opencv':
-                ret, frame = camera.read()
-                if not ret:
-                    logger.debug("Detection: echec capture frame")
-                    return False
-            else:
-                return False
+        # Capturer le frame
+        frame = capture_frame_for_detection()
+        if frame is None:
+            return False
 
-        # Appliquer rotation si nécessaire
-        if camera_rotation != 0:
-            frame = rotate_frame(frame, camera_rotation)
+        # Sélectionner l'algorithme
+        algorithm = person_detection_algorithm
 
-        # Réduire la taille pour accélérer la détection (garder assez grand)
-        scale = 0.6
-        small_frame = cv2.resize(frame, None, fx=scale, fy=scale)
-
-        # Calculer le seuil basé sur la sensibilité (0.0 = très sensible, 1.0 = peu sensible)
-        # hitThreshold: 0 = très sensible, 0.5 = moyen, 1.0+ = peu sensible
-        hit_threshold = person_detection_sensitivity * 0.8
-
-        # Détection HOG avec paramètres optimisés
-        boxes, weights = hog_detector.detectMultiScale(
-            small_frame,
-            winStride=(4, 4),      # Plus petit = plus précis mais plus lent
-            padding=(8, 8),        # Plus de padding = meilleure détection aux bords
-            scale=1.02,            # Plus petit = plus de niveaux de détection
-            hitThreshold=hit_threshold  # Basé sur la sensibilité configurée
-        )
-
-        # Log pour debug
-        if len(boxes) > 0:
-            logger.info(f"Detection HOG: {len(boxes)} zones, poids: {weights}")
-
-        # Retourner vrai si au moins une détection
-        detected = len(boxes) > 0
-        return detected
+        if algorithm == 'motion':
+            return detect_motion(frame)
+        elif algorithm == 'face':
+            return detect_face(frame)
+        elif algorithm == 'hog':
+            return detect_hog(frame)
+        elif algorithm == 'mobilenet':
+            return detect_mobilenet(frame)
+        else:
+            # Fallback sur motion
+            return detect_motion(frame)
 
     except Exception as e:
-        logger.error(f"Erreur detection: {e}")
+        logger.error(f"Erreur detection ({person_detection_algorithm}): {e}")
         return False
 
 def person_detection_thread():
@@ -1398,10 +1604,17 @@ def api_detection_status():
 def api_detection_settings():
     """API: Obtenir ou modifier les réglages de détection"""
     global person_detection_sensitivity, person_detection_cooldown
-    global person_alarm_enabled, person_led_enabled
+    global person_alarm_enabled, person_led_enabled, person_detection_algorithm
 
     if request.method == 'POST':
         data = request.json or {}
+        if 'algorithm' in data:
+            algo = data['algorithm']
+            if algo in ['motion', 'hog', 'face', 'mobilenet']:
+                person_detection_algorithm = algo
+                logger.info(f"Algorithme detection: {algo}")
+                # Initialiser le détecteur si nécessaire
+                init_detector_for_algorithm(algo)
         if 'sensitivity' in data:
             # Convertir 0-100 en 0.0-1.0 (inversé: 100% = très sensible = seuil bas)
             person_detection_sensitivity = 1.0 - (data['sensitivity'] / 100.0)
@@ -1419,6 +1632,7 @@ def api_detection_settings():
 
     # GET - retourner les réglages actuels
     return jsonify({
+        "algorithm": person_detection_algorithm,
         "sensitivity": int((1.0 - person_detection_sensitivity) * 100),
         "cooldown": person_detection_cooldown,
         "alarm_enabled": person_alarm_enabled,
