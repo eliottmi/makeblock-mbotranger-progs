@@ -52,7 +52,7 @@ camera = None
 camera_streaming = False
 camera_lock = threading.Lock()
 camera_type = None
-camera_rotation = 270  # Rotation en degrés (0, 90, 180, 270) - 270 = rotation gauche
+camera_rotation = 90  # Rotation en degrés (0, 90, 180, 270) - 90 = rotation droite
 camera_color_swap = True  # Inverser R et B (activé par défaut pour Pi Camera)
 
 # Person detection
@@ -94,10 +94,31 @@ HTML_PAGE = """
             color: #fff;
             padding: 20px;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         h1 { text-align: center; margin-bottom: 20px; font-size: 1.8em; }
         .main-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        @media (max-width: 900px) { .main-layout { grid-template-columns: 1fr; } }
+        @media (max-width: 1100px) { .main-layout { grid-template-columns: 1fr; } }
+        .camera-joystick-section {
+            display: flex;
+            gap: 15px;
+            align-items: flex-start;
+        }
+        .camera-joystick-section .camera-panel {
+            flex: 1;
+            min-width: 0;
+        }
+        .camera-joystick-section .joystick-panel {
+            flex-shrink: 0;
+            width: 220px;
+        }
+        @media (max-width: 700px) {
+            .camera-joystick-section {
+                flex-direction: column;
+            }
+            .camera-joystick-section .joystick-panel {
+                width: 100%;
+            }
+        }
         .status-bar {
             background: rgba(255,255,255,0.1);
             border-radius: 10px;
@@ -328,26 +349,54 @@ HTML_PAGE = """
         <div class="main-layout">
             <div class="left-column">
                 <div class="panel">
-                    <h2>Camera Pi</h2>
-                    <div class="camera-container">
-                        <div class="camera-placeholder" id="cameraPlaceholder">Camera arretee</div>
-                        <img class="camera-feed" id="cameraFeed" alt="Camera">
-                        <div class="camera-overlay" id="cameraOverlay">LIVE</div>
-                    </div>
-                    <div class="camera-controls">
-                        <button class="btn-small green" onclick="startCamera()">Demarrer</button>
-                        <button class="btn-small red" onclick="stopCamera()">Arreter</button>
-                        <button class="btn-small purple" onclick="snapshot()">Photo</button>
-                    </div>
-                    <div class="camera-controls" style="margin-top: 8px;">
-                        <span style="color: #888; font-size: 0.8em;">Rotation:</span>
-                        <button class="btn-small" onclick="rotateCamera(0)">0°</button>
-                        <button class="btn-small" onclick="rotateCamera(90)">90°</button>
-                        <button class="btn-small" onclick="rotateCamera(180)">180°</button>
-                        <button class="btn-small" onclick="rotateCamera(270)">270°</button>
-                    </div>
-                    <div class="camera-controls" style="margin-top: 8px;">
-                        <button class="btn-small yellow" id="btnColorSwap" onclick="toggleColorSwap()">Inverser couleurs</button>
+                    <h2>Camera Pi + Controles</h2>
+                    <div class="camera-joystick-section">
+                        <div class="camera-panel">
+                            <div class="camera-container">
+                                <div class="camera-placeholder" id="cameraPlaceholder">Camera arretee</div>
+                                <img class="camera-feed" id="cameraFeed" alt="Camera">
+                                <div class="camera-overlay" id="cameraOverlay">LIVE</div>
+                            </div>
+                            <div class="camera-controls">
+                                <button class="btn-small green" onclick="startCamera()">Demarrer</button>
+                                <button class="btn-small red" onclick="stopCamera()">Arreter</button>
+                                <button class="btn-small purple" onclick="snapshot()">Photo</button>
+                            </div>
+                            <div class="camera-controls" style="margin-top: 8px;">
+                                <span style="color: #888; font-size: 0.8em;">Rotation:</span>
+                                <button class="btn-small" onclick="rotateCamera(0)">0</button>
+                                <button class="btn-small" onclick="rotateCamera(90)">90</button>
+                                <button class="btn-small" onclick="rotateCamera(180)">180</button>
+                                <button class="btn-small" onclick="rotateCamera(270)">270</button>
+                            </div>
+                            <div class="camera-controls" style="margin-top: 8px;">
+                                <button class="btn-small yellow" id="btnColorSwap" onclick="toggleColorSwap()">Inverser couleurs</button>
+                            </div>
+                        </div>
+                        <div class="joystick-panel">
+                            <div class="joystick-container">
+                                <div class="joystick-area" id="joystickArea">
+                                    <div class="joystick-directions">
+                                        <span class="up">^</span>
+                                        <span class="down">v</span>
+                                        <span class="left">&lt;</span>
+                                        <span class="right">&gt;</span>
+                                    </div>
+                                    <div class="joystick-base"></div>
+                                    <div class="joystick-stick" id="joystickStick"></div>
+                                </div>
+                                <div class="speed-control">
+                                    <label>Vitesse:</label>
+                                    <input type="range" class="speed-slider" id="speedSlider" min="50" max="255" value="150">
+                                    <span class="speed-value" id="speedValue">150</span>
+                                </div>
+                                <div class="joystick-info">
+                                    <div>X: <span id="joystickX">0</span></div>
+                                    <div>Y: <span id="joystickY">0</span></div>
+                                </div>
+                                <button class="btn stop" onclick="cmdMove('stop')" style="margin-top: 5px; width: 100%;">STOP</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -388,32 +437,6 @@ HTML_PAGE = """
                                 LED rouge
                             </label>
                         </div>
-                    </div>
-                </div>
-
-                <div class="panel">
-                    <h2>Controles</h2>
-                    <div class="joystick-container">
-                        <div class="joystick-area" id="joystickArea">
-                            <div class="joystick-directions">
-                                <span class="up">^</span>
-                                <span class="down">v</span>
-                                <span class="left">&lt;</span>
-                                <span class="right">&gt;</span>
-                            </div>
-                            <div class="joystick-base"></div>
-                            <div class="joystick-stick" id="joystickStick"></div>
-                        </div>
-                        <div class="speed-control">
-                            <label>Vitesse:</label>
-                            <input type="range" class="speed-slider" id="speedSlider" min="50" max="255" value="150">
-                            <span class="speed-value" id="speedValue">150</span>
-                        </div>
-                        <div class="joystick-info">
-                            <div>X: <span id="joystickX">0</span></div>
-                            <div>Y: <span id="joystickY">0</span></div>
-                        </div>
-                        <button class="btn stop" onclick="cmdMove('stop')" style="margin-top: 5px;">STOP</button>
                     </div>
                 </div>
             </div>
@@ -1936,9 +1959,9 @@ def main():
                        help='Adresse ecoute (defaut: 0.0.0.0)')
     parser.add_argument('--no-camera', action='store_true',
                        help='Desactiver la camera')
-    parser.add_argument('--camera-rotation', '-r', type=int, default=270,
+    parser.add_argument('--camera-rotation', '-r', type=int, default=90,
                        choices=[0, 90, 180, 270],
-                       help='Rotation camera en degres (defaut: 270 = gauche)')
+                       help='Rotation camera en degres (defaut: 90 = droite)')
     parser.add_argument('--debug', '-d', action='store_true',
                        help='Mode debug')
 
